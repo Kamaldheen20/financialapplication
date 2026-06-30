@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1">
+
+<title>Collection Sheet</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+rel="stylesheet">
+
+<style>
+
+body{
+    background:#f8f9fa;
+}
+
+.table-responsive{
+    overflow-x:auto;
+}
+
+th,td{
+    text-align:center;
+    white-space:nowrap;
+    font-size:14px;
+}
+
+thead{
+    position:sticky;
+    top:0;
+    background:white;
+    z-index:100;
+}
+
+</style>
+
+</head>
+
+<body class="bg-light">
+
+<div class="container-fluid mt-4">
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+
+    <h2 class="mb-0">
+        Monthly Collection Sheet
+    </h2>
+
+    <div class="d-flex gap-2">
+
+        <a href="/dashboard"
+        class="btn btn-primary">
+            Dashboard
+        </a>
+
+        <a href="/customer_ledger"
+        class="btn btn-info">
+            Customer Ledger
+        </a>
+
+        <a href="/export_collection/{{ selected_month }}"
+        class="btn btn-success">
+            Export Excel
+        </a>
+
+        <a href="/export_collection_pdf/{{ selected_month }}"
+        class="btn btn-danger">
+            Export PDF
+        </a>
+
+    </div>
+
+</div>
+
+<form method="GET">
+
+<div class="row mb-3">
+
+<div class="col-md-3">
+
+<input
+type="month"
+name="month"
+value="{{ selected_month }}"
+class="form-control">
+
+</div>
+
+<div class="col-md-2">
+
+<button
+class="btn btn-success">
+
+Load
+
+</button>
+
+</div>
+
+</div>
+
+</form>
+
+<div class="row mb-3">
+
+<div class="col-md-4">
+
+<input
+type="text"
+id="searchInput"
+class="form-control"
+placeholder="Search Customer ID or Name">
+
+</div>
+
+</div>
+
+<div class="table-responsive">
+
+<table
+id="collectionTable"
+class="table table-bordered table-striped table-hover">
+
+<thead class="table-dark">
+
+<tr>
+
+<th>ID</th>
+
+<th>Name</th>
+
+<th>Loan</th>
+
+{% for day in range(1,32) %}
+
+<th>{{ day }}</th>
+
+{% endfor %}
+
+<th>Month Total</th>
+
+<th>Total Paid</th>
+
+<th>Balance</th>
+
+<th>Status</th>
+
+</tr>
+
+</thead>
+
+{% for customer in customers %}
+
+<tr>
+
+<td>{{ customer.customer_id }}</td>
+
+<td>{{ customer.name }}</td>
+
+<td>₹{{ customer.loan_amount }}</td>
+
+{% set month_total = namespace(value=0) %}
+
+{% for day in range(1,32) %}
+
+{% set found = namespace(value='-') %}
+
+{% for payment in payments %}
+
+{% if payment.customer_id == customer.customer_id %}
+
+{% if payment.payment_date.startswith(selected_month) %}
+
+{% set payment_day =
+payment.payment_date.split('-')[2]|int %}
+
+{% if payment_day == day %}
+
+{% set found.value = payment.amount %}
+
+{% set month_total.value =
+month_total.value + payment.amount %}
+
+{% endif %}
+
+{% endif %}
+
+{% endif %}
+
+{% endfor %}
+
+<td>{{ found.value }}</td>
+
+{% endfor %}
+
+<td>₹{{ month_total.value }}</td>
+
+<td>₹{{ customer.total_paid }}</td>
+
+<td>₹{{ customer.remaining_balance }}</td>
+
+<td>
+
+{% if customer.status == "Closed" %}
+
+<span class="badge bg-success">
+
+Closed
+
+</span>
+
+{% else %}
+
+<span class="badge bg-warning text-dark">
+
+Active
+
+</span>
+
+{% endif %}
+
+</td>
+
+</tr>
+
+{% endfor %}
+
+<tr class="table-success fw-bold">
+
+<td colspan="3">
+
+<tr class="table-success fw-bold">
+
+<td colspan="3">
+DAY TOTAL
+</td>
+
+{% for day in range(1,32) %}
+
+<td>
+
+{% set day_total = namespace(value=0) %}
+
+{% for payment in payments %}
+
+{% if payment.payment_date.startswith(selected_month) %}
+
+{% set payment_day =
+payment.payment_date.split('-')[2]|int %}
+
+{% if payment_day == day %}
+
+{% set day_total.value =
+day_total.value + payment.amount %}
+
+{% endif %}
+
+{% endif %}
+
+{% endfor %}
+
+₹{{ day_total.value }}
+
+</td>
+
+{% endfor %}
+
+<td>
+
+{% set month_collection = namespace(value=0) %}
+
+{% for payment in payments %}
+
+{% if payment.payment_date.startswith(selected_month) %}
+
+{% set month_collection.value =
+month_collection.value + payment.amount %}
+
+{% endif %}
+
+{% endfor %}
+
+₹{{ month_collection.value }}
+
+</td>
+
+<td>
+
+{% set total_paid_all = namespace(value=0) %}
+
+{% for customer in customers %}
+
+{% set total_paid_all.value =
+total_paid_all.value + customer.total_paid %}
+
+{% endfor %}
+
+₹{{ total_paid_all.value }}
+
+</td>
+
+<td>
+
+{% set total_balance_all = namespace(value=0) %}
+
+{% for customer in customers %}
+
+{% set total_balance_all.value =
+total_balance_all.value + customer.remaining_balance %}
+
+{% endfor %}
+
+₹{{ total_balance_all.value }}
+
+</td>
+
+<td>-</td>
+
+</tr>
+
+</tbody>
+
+</table>
+
+</table>
+
+</div>
+
+</div>
+
+<script>
+
+document.getElementById(
+    "searchInput"
+).addEventListener(
+    "keyup",
+    function(){
+
+        let value =
+        this.value.toLowerCase();
+
+        let rows =
+        document.querySelectorAll(
+            "#collectionTable tbody tr"
+        );
+
+        rows.forEach(row => {
+
+            // FIXED: Only search columns 0 (ID) and 1 (Name)
+            // Instead of searching entire row which includes amounts
+            let customerId = row.cells[0] ? row.cells[0].innerText.toLowerCase() : "";
+            let name = row.cells[1] ? row.cells[1].innerText.toLowerCase() : "";
+            
+            let searchMatch = 
+                customerId.includes(value) ||
+                name.includes(value);
+
+            row.style.display =
+            searchMatch
+            ? ""
+            : "none";
+
+        });
+
+    }
+);
+
+</script>
+
+</body>
+
+</html>

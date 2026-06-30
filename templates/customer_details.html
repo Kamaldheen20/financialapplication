@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Details</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body { background: #f8f9fa; }
+.summary-card { border-radius: 12px; }
+</style>
+</head>
+<body>
+
+<div class="container-fluid mt-4">
+
+  <!-- Header -->
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>Customer Details</h2>
+    <div>
+      <a href="/customer_ledger" class="btn btn-primary">Back</a>
+      <a href="/export_customer/{{ customer.customer_id }}" class="btn btn-success">Export Excel</a>
+      <a href="/customer_statement_pdf/{{ customer.customer_id }}" class="btn btn-danger">Statement PDF</a>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="row mb-4">
+    <div class="col-md-3">
+      <div class="card shadow summary-card">
+        <div class="card-body text-center">
+          <h6>Loan Amount</h6>
+          <h3>₹{{ customer.loan_amount }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card shadow summary-card">
+        <div class="card-body text-center">
+          <h6>Total Paid</h6>
+          <h3>₹{{ customer.total_paid }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card shadow summary-card">
+        <div class="card-body text-center">
+          <h6>Balance</h6>
+          <h3>₹{{ customer.remaining_balance }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card shadow summary-card">
+        <div class="card-body text-center">
+          <h6>Status</h6>
+          <h3>
+            {% if customer.status == "Closed" %}
+              <span class="badge bg-success">Closed</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">Active</span>
+            {% endif %}
+          </h3>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Customer Information -->
+  <div class="card shadow mb-4">
+    <div class="card-header"><h4>Customer Information</h4></div>
+    <div class="card-body">
+      <div class="row">
+
+        <div class="col-md-6">
+          <p><b>Customer ID:</b> {{ customer.customer_id }}</p>
+          <p><b>Name:</b> {{ customer.name }}</p>
+          <p><b>Mobile:</b> {{ customer.mobile }}</p>
+        </div>
+
+        <div class="col-md-6">
+          <p><b>Start Date:</b> {{ customer.start_date }}</p>
+          <p><b>End Date:</b> {{ customer.end_date if customer.end_date else "—" }}</p>
+
+          <!-- FIX: total_days, days_passed, remaining_days now passed from the route -->
+          <p>
+            <b>Total Loan Days:</b>
+            {% if total_days != "-" %}
+              {{ total_days }} days
+            {% else %}
+              <span class="text-muted">N/A</span>
+            {% endif %}
+          </p>
+
+          <p>
+            <b>Days Passed:</b>
+            {% if days_passed != "-" %}
+              {{ days_passed }} days
+            {% else %}
+              <span class="text-muted">N/A</span>
+            {% endif %}
+          </p>
+
+          <p>
+            <b>Remaining Days:</b>
+            {% if remaining_days != "-" %}
+              {% if remaining_days == 0 %}
+                <span class="text-danger fw-bold">0 days (Due today / Overdue)</span>
+              {% elif remaining_days <= 7 %}
+                <span class="text-warning fw-bold">{{ remaining_days }} days</span>
+              {% else %}
+                <span class="text-success">{{ remaining_days }} days</span>
+              {% endif %}
+            {% else %}
+              <span class="text-muted">N/A</span>
+            {% endif %}
+          </p>
+
+          <p><b>Daily Due:</b> ₹{{ customer.daily_due }}</p>
+          <p><b>Total Payments:</b> {{ payments|length }}</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Payment History -->
+  <div class="card shadow">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h4>Payment History</h4>
+      <span class="badge bg-primary">{{ payments|length }} Payments</span>
+    </div>
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-bordered table-striped">
+          <thead class="table-dark">
+            <tr>
+              <th>#</th>
+              <th>Date</th>
+              <th>Amount</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for payment in payments %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>{{ payment.payment_date }}</td>
+              <td>₹{{ payment.amount }}</td>
+              <td>
+                <a href="/edit_payment/{{ payment.id }}" class="btn btn-warning btn-sm">Edit</a>
+                <a href="/delete_payment/{{ payment.id }}" class="btn btn-danger btn-sm"
+                   onclick="return confirm('Delete this payment?');">Delete</a>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if not payments %}
+            <tr><td colspan="4" class="text-center text-muted">No Payments Found</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<style>
+
+body{
+    font-family: Arial;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+}
+
+th,td{
+    border:1px solid black;
+    padding:8px;
+    text-align:center;
+}
+
+h2,h3{
+    text-align:center;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h2>Daily Collection Report</h2>
+
+<h3>Date: {{ selected_date }}</h3>
+
+<h3>Total Collection: ₹{{ total_collection }}</h3>
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>#</th>
+
+<th>Date</th>
+
+<th>Customer ID</th>
+
+<th>Amount</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+{% for payment in payments %}
+
+<tr>
+
+<td>{{ loop.index }}</td>
+
+<td>{{ payment.payment_date }}</td>
+
+<td>{{ payment.customer_id }}</td>
+
+<td>₹{{ payment.amount }}</td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</body>
+
+</html>
