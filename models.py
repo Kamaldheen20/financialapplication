@@ -22,11 +22,16 @@ class Admin(UserMixin, db.Model):
         nullable=False
     )
 
+    mobile = db.Column(
+        db.String(20),
+        unique=True,
+        nullable=False
+    )
+
     password = db.Column(
         db.String(255),
         nullable=False
     )
-
 
 # ==========================
 # CUSTOMER TABLE

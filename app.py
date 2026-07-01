@@ -331,28 +331,77 @@ def login():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    
+
     if request.method == "POST":
-        username = request.form["username"]
+
+        username = request.form["username"].strip()
+        mobile = request.form["mobile"].strip()
         password = request.form["password"]
 
-        existing = Admin.query.filter_by(username=username).first()
-        if existing:
-            flash("Username already exists")
+        # Check username
+        if Admin.query.filter_by(username=username).first():
+            flash("Username already exists", "danger")
+            return redirect(url_for("register"))
+
+        # Check mobile
+        if Admin.query.filter_by(mobile=mobile).first():
+            flash("Mobile number already registered", "danger")
             return redirect(url_for("register"))
 
         admin = Admin(
             username=username,
+            mobile=mobile,
             password=generate_password_hash(password)
         )
+
         db.session.add(admin)
         db.session.commit()
 
-        flash("Account Created Successfully")
+        flash("Account Created Successfully", "success")
         return redirect(url_for("login"))
-
     return render_template("register.html")
+#forget pass
+@app.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password():
 
+    if request.method == "POST":
 
+        username = request.form["username"].strip()
+        mobile = request.form["mobile"].strip()
+        password = request.form["password"]
+        confirm_password = request.form["confirm_password"]
+
+        # Check password confirmation
+        if password != confirm_password:
+            flash("Passwords do not match.", "danger")
+            return redirect(url_for("forgot_password"))
+
+        # Find the user
+        admin = Admin.query.filter_by(
+            username=username,
+            mobile=mobile
+        ).first()
+
+        if not admin:
+            flash(
+                "Invalid Username or Mobile Number.",
+                "danger"
+            )
+            return redirect(url_for("forgot_password"))
+
+        # Update password
+        admin.password = generate_password_hash(password)
+
+        db.session.commit()
+
+        flash(
+            "Password updated successfully. Please login.",
+            "success"
+        )
+
+        return redirect(url_for("login"))
+    return render_template("forgot_password.html")
 # ==========================
 # DASHBOARD
 # ==========================
@@ -1486,14 +1535,17 @@ with app.app_context():
     db.create_all()
 
     admin = Admin.query.filter_by(username="admin").first()
+
     if not admin:
+
         admin = Admin(
             username="admin",
+            mobile="9999999999",
             password=generate_password_hash("admin123")
         )
+
         db.session.add(admin)
         db.session.commit()
-        print("Default Admin Created")
 
 
 # ==========================
