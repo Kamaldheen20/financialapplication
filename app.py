@@ -1,6 +1,7 @@
 # ==========================
 # IMPORTS
 # ==========================
+from flask import request
 from math import ceil
 from datetime import datetime, timedelta
 from sqlalchemy.exc import IntegrityError
@@ -19,8 +20,10 @@ from flask import (
     redirect,
     url_for,
     flash,
-    send_file
+    send_file,
+    session
 )
+
 
 from flask_login import (
     LoginManager,
@@ -47,14 +50,58 @@ from models import (
 # APP CONFIG
 # ==========================
 
-load_dotenv()
+import sys
 
+# ---------------------------------------------------------------------
+# FIX: locate .env correctly whether running as a normal script or as
+# a PyInstaller-built .exe.
+#
+# - Normal `python app.py`: base dir = folder containing this file.
+# - Frozen .exe (PyInstaller): sys.frozen is True and sys.executable
+#   points at the .exe itself. We use the folder the .exe lives in
+#   (NOT sys._MEIPASS, which is a temp extraction folder that gets
+#   deleted after the app closes and isn't where you'd want users
+#   editing credentials anyway).
+#
+# This means: ship a `.env` file in the SAME FOLDER as the built
+# .exe (e.g. dist/YourApp/.env), and users can edit DB credentials
+# there without rebuilding the exe.
+# ---------------------------------------------------------------------
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+env_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(env_path)
 
 app = Flask(__name__)
 
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or "change-this-secret-key"
 
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
+database_url = os.getenv("DATABASE_URL")
+
+if not database_url:
+    # Fail loudly with a clear, actionable message instead of letting
+    # Flask-SQLAlchemy raise its generic "SQLALCHEMY_DATABASE_URI must
+    # be set" RuntimeError with no context about WHY it's missing.
+    error_msg = (
+        f"DATABASE_URL not found.\n\n"
+        f"Expected a .env file at:\n{env_path}\n\n"
+        f"containing a line like:\n"
+        f"DATABASE_URL=postgresql://user:password@host:5432/dbname\n\n"
+        f"Place a .env file next to the .exe and restart the app."
+    )
+    if getattr(sys, "frozen", False):
+        # Show a native Windows message box since there's no console
+        # attached to a windowed PyInstaller build to print to.
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, error_msg, "Configuration Error", 0x10)
+        sys.exit(1)
+    else:
+        raise RuntimeError(error_msg)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
@@ -859,12 +906,16 @@ def export_collection(month):
 @app.route("/export_collection_pdf/<month>")
 @login_required
 def export_collection_pdf(month):
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+    )
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.pagesizes import landscape, A3
+    from sqlalchemy import func, cast, Integer
+    from collections import defaultdict
 
-    # Register Tamil-capable font
+    # Register Tamil-capable font (cached globally after first call)
     normal_font, bold_font, has_tamil = _register_tamil_font()
 
     buffer = io.BytesIO()
@@ -898,31 +949,111 @@ def export_collection_pdf(month):
         headers.append(str(day))
     headers.extend(["Month Total", "Total Paid", "Balance", "Status"])
 
-    data = [headers]
+    # OPTIMIZATION 1 - reuse a single TableStyle object for every chunk
+    # instead of rebuilding an identical TableStyle 100+ times.
+    row_style = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("FONTNAME", (0, 0), (-1, 0), bold_font),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ])
 
-    customers = Customer.query.filter_by(user_id=current_user.id).all()
-    customers = _sort_customers(customers)
+    # =====================================================================
+    # OPTIMIZATION 2 - KILL THE N+1 QUERY
+    # The old code ran one Payment.query.filter_by(...).all() PER CUSTOMER
+    # (1000 customers = 1000+ round trips to Supabase - this alone is what
+    # was blowing up connections / time on Render). We instead pull every
+    # payment for this month ONCE, pre-aggregated (SUM + GROUP BY) inside
+    # Postgres itself, and build a small in-memory lookup dict:
+    #   payments_by_customer[customer_id][day] = total_amount_that_day
+    # This dict is tiny (at most 31 entries per customer who paid) compared
+    # to holding every raw Payment row in memory.
+    # =====================================================================
+    day_expr = cast(func.substr(Payment.payment_date, 9, 2), Integer)
 
-    for customer in customers:
+    payment_query = (
+        db.session.query(
+            Payment.customer_id,
+            day_expr.label("day"),
+            func.sum(Payment.amount).label("day_total")
+        )
+        .filter(
+            Payment.user_id == current_user.id,
+            Payment.payment_date.like(f"{month}%")
+        )
+        .group_by(Payment.customer_id, day_expr)
+    )
+
+    payments_by_customer = defaultdict(dict)   # {customer_id: {day: amount}}
+    day_totals = defaultdict(float)            # {day: total across ALL customers}
+    month_total_all = 0
+
+    # OPTIMIZATION 3 - stream the aggregated rows instead of .all().
+    # yield_per() fetches in batches from the DB cursor rather than
+    # materializing the entire result set in Python memory at once.
+    for cust_id, day, day_total in payment_query.yield_per(500):
+        payments_by_customer[cust_id][day] = day_total
+        day_totals[day] += day_total
+        month_total_all += day_total
+
+    # =====================================================================
+    # OPTIMIZATION 4 - NO sorted() ON QUERY RESULTS, LET POSTGRES ORDER BY
+    # The old code did Customer.query...yield_per(100) and then immediately
+    # threw away the streaming benefit by calling sorted() on it, which
+    # forces the ENTIRE result set into a Python list before sorting.
+    # For customer_id values that are numeric strings ("1", "2", ... "9999"),
+    # ORDER BY LENGTH(customer_id), customer_id in Postgres reproduces the
+    # exact same order as sorting by int(customer_id) in Python (shorter
+    # numeric strings always sort first, then lexicographically). This lets
+    # the database do the sort and lets us stream rows straight off the
+    # cursor with constant memory, regardless of 100 vs 10,000 customers.
+    # =====================================================================
+    customers_query = (
+        Customer.query
+        .filter_by(user_id=current_user.id)
+        .order_by(func.length(Customer.customer_id), Customer.customer_id)
+        .yield_per(200)
+    )
+
+    def flush_chunk(rows, include_header):
+        """
+        OPTIMIZATION 5 - CHUNKED TABLES + PAGE BREAKS INSTEAD OF ONE
+        GIANT TABLE.
+        A single ReportLab Table() holding thousands of rows keeps every
+        Paragraph/cell flowable alive in memory simultaneously while
+        doc.build() lays out pages - this is the #1 cause of the SIGKILL
+        / OOM crash on Render's free tier. Instead we build a small
+        Table() per 100 rows, append it to `elements`, and let Python's
+        GC reclaim the row list. Column layout, fonts, grid lines and
+        colors are identical to the original design.
+        """
+        chunk_data = ([headers] + rows) if include_header else rows
+        t = Table(chunk_data, repeatRows=1 if include_header else 0)
+        t.setStyle(row_style)
+        elements.append(t)
+
+    data_rows = []
+    row_count_in_chunk = 0
+    is_first_chunk = True
+    total_paid_all = 0
+    total_balance_all = 0
+
+    for customer in customers_query:
         # _pdf_text() switches font per-character: Tamil->NotoSansTamil, Latin->NotoSans
         name_cell = Paragraph(_pdf_text(customer.name), normal_style)
         row = [customer.customer_id, name_cell, customer.loan_amount]
+
+        cust_payments = payments_by_customer.get(customer.customer_id, {})
         month_total = 0
-
-        payments = Payment.query.filter_by(
-            customer_id=customer.customer_id,
-            user_id=current_user.id
-        ).all()
-
         for day in range(1, 32):
-            value = "-"
-            for payment in payments:
-                if payment.payment_date.startswith(month):
-                    payment_day = int(payment.payment_date.split("-")[2])
-                    if payment_day == day:
-                        value = payment.amount
-                        month_total += payment.amount
-            row.append(value)
+            amt = cust_payments.get(day)
+            if amt is None:
+                row.append("-")
+            else:
+                row.append(amt)
+                month_total += amt
 
         row.extend([
             month_total,
@@ -930,43 +1061,52 @@ def export_collection_pdf(month):
             customer.remaining_balance,
             customer.status
         ])
-        data.append(row)
+        data_rows.append(row)
+        row_count_in_chunk += 1
 
-    # DAY TOTAL ROW
-    all_payments = Payment.query.filter_by(user_id=current_user.id).all()
+        total_paid_all += customer.total_paid or 0
+        total_balance_all += customer.remaining_balance or 0
 
+        # OPTIMIZATION 6 - flush + PageBreak every 100 rows so no single
+        # Table() or in-memory list ever holds more than 100 rows.
+        if row_count_in_chunk == 100:
+            flush_chunk(data_rows, include_header=is_first_chunk)
+            elements.append(PageBreak())
+            data_rows = []          # release the chunk, don't accumulate
+            row_count_in_chunk = 0
+            is_first_chunk = False
+
+    # Flush the final partial chunk (< 100 rows)
+    if data_rows:
+        flush_chunk(data_rows, include_header=is_first_chunk)
+        data_rows = []
+
+    # OPTIMIZATION 7 - DAY TOTAL ROW built entirely from the aggregates
+    # computed during the single streaming pass above (no second
+    # Payment.query.filter_by(...).all() needed, unlike the original).
     total_row = ["DAY TOTAL", "", ""]
     for day in range(1, 32):
-        day_total = sum(
-            p.amount for p in all_payments
-            if p.payment_date.startswith(month) and
-            int(p.payment_date.split("-")[2]) == day
-        )
-        total_row.append(day_total)
-
-    month_total_all = sum(
-        p.amount for p in all_payments
-        if p.payment_date.startswith(month)
-    )
-    total_paid_all = sum(c.total_paid for c in customers)
-    total_balance_all = sum(c.remaining_balance for c in customers)
-
+        total_row.append(day_totals.get(day, 0))
     total_row.extend([month_total_all, total_paid_all, total_balance_all, "-"])
-    data.append(total_row)
 
-    table = Table(data)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.lightgreen),
+    total_table = Table([total_row])
+    total_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.lightgreen),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ("FONTNAME", (0, 0), (-1, 0), bold_font),
-        ("FONTNAME", (0, -1), (-1, -1), bold_font),
+        ("FONTNAME", (0, 0), (-1, -1), bold_font),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
+    elements.append(total_table)
 
-    elements.append(table)
+    # OPTIMIZATION 8 - release the SQLAlchemy identity map. After
+    # streaming thousands of Customer objects, the Session still holds
+    # references to all of them. expunge_all() detaches them so they can
+    # be garbage-collected before/while doc.build() does its (memory
+    # heavier) layout pass.
+    db.session.expunge_all()
+
     doc.build(elements)
     buffer.seek(0)
 
@@ -1524,8 +1664,8 @@ def company_settings():
 @login_required
 def logout():
     logout_user()
+    session.clear()
     return redirect(url_for("login"))
-
 
 # ==========================
 # DATABASE INIT
@@ -1537,7 +1677,6 @@ with app.app_context():
     admin = Admin.query.filter_by(username="admin").first()
 
     if not admin:
-
         admin = Admin(
             username="admin",
             mobile="9999999999",
@@ -1548,10 +1687,14 @@ with app.app_context():
         db.session.commit()
 
 
-# ==========================
-# RUN APP
-# ==========================
+        # ==========================
+        # RUN APP
+        # ==========================
 
-
-    if __name__ == "__main__":
-        app.run(host="0.0.0.0", port=5000)
+if __name__ == "__main__":
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=False,
+        use_reloader=False
+    )
