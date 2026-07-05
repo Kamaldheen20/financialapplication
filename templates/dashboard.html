@@ -151,7 +151,14 @@ localStorage.getItem("workingDate") || today;
 
 globalDate.value = savedDate;
 paymentDate.value = savedDate;
-startDate.value = savedDate;
+
+// Customer Registration's Start Date is INDEPENDENT of Working Date —
+// it has its own separate localStorage key and is never overwritten
+// when the Working Date changes.
+const savedStartDate =
+localStorage.getItem("customerStartDate") || today;
+
+startDate.value = savedStartDate;
 
 // ==============================
 // Calculate End Date (100 Days)
@@ -194,35 +201,102 @@ function calculateEndDate() {
 // Working Date Changed
 // ==============================
 
-globalDate.addEventListener(
-    "change",
-    function () {
+function saveWorkingDate(value) {
 
-        localStorage.setItem(
-            "workingDate",
-            this.value
-        );
+    if (!value) return;
 
-        paymentDate.value =
-        this.value;
+    localStorage.setItem(
+        "workingDate",
+        value
+    );
 
-        // Auto-fill start date only
-        startDate.value =
-        this.value;
+    paymentDate.value = value;
 
-        calculateEndDate();
+    // Start Date is independent — Working Date no longer touches it.
+}
 
-    }
-);
+// "change" fires on blur/confirm, "input" fires immediately as the
+// value is picked — listening to both means the date is saved to
+// localStorage right away instead of only after the field loses focus.
+globalDate.addEventListener("change", function () {
+    saveWorkingDate(this.value);
+});
+
+globalDate.addEventListener("input", function () {
+    saveWorkingDate(this.value);
+});
+
+// Safety net: whichever form is submitted, force-persist the current
+// working date to localStorage BEFORE the browser navigates away, so a
+// fast click right after picking a date can never race past the save.
+document.querySelectorAll("form").forEach(function (form) {
+    form.addEventListener("submit", function () {
+        if (globalDate.value) {
+            localStorage.setItem("workingDate", globalDate.value);
+        }
+        if (startDate.value) {
+            localStorage.setItem("customerStartDate", startDate.value);
+        }
+    });
+});
+
+// ==============================
+// Prevent Enter key from submitting
+// the Customer Registration form early
+// ==============================
+// With several fields (ID, name, mobile, address, loan amount, daily
+// due, dates), pressing Enter in any single field should NOT submit
+// the whole form before the rest is filled in. Enter now just moves
+// focus to the next field instead.
+
+const customerForm = document.querySelector('form[action="/add_customer"]');
+
+if (customerForm) {
+
+    const focusableFields = Array.from(
+        customerForm.querySelectorAll("input, textarea")
+    );
+
+    customerForm.addEventListener("keydown", function (e) {
+
+        if (e.key !== "Enter") return;
+
+        // Allow normal newline behavior inside the address textarea
+        if (e.target.tagName === "TEXTAREA") return;
+
+        e.preventDefault();
+
+        const index = focusableFields.indexOf(e.target);
+
+        if (index > -1 && index < focusableFields.length - 1) {
+            focusableFields[index + 1].focus();
+        }
+    });
+}
 
 // ==============================
 // Start Date Changed
 // ==============================
 
-startDate.addEventListener(
-    "change",
-    calculateEndDate
-);
+function saveStartDate(value) {
+
+    if (!value) return;
+
+    localStorage.setItem(
+        "customerStartDate",
+        value
+    );
+
+    calculateEndDate();
+}
+
+startDate.addEventListener("change", function () {
+    saveStartDate(this.value);
+});
+
+startDate.addEventListener("input", function () {
+    saveStartDate(this.value);
+});
 
 // ==============================
 // Initial Calculation
