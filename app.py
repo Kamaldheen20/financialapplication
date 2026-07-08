@@ -1,17 +1,13 @@
 # ==========================
 # IMPORTS
 # ==========================
-from flask import request
-from math import ceil
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 import os
+import secrets
+import logging
 from dotenv import load_dotenv
 import io
-import shutil
-import webbrowser
-from datetime import datetime
-from threading import Timer
 
 from flask import (
     Flask,
@@ -75,9 +71,42 @@ else:
 env_path = os.path.join(BASE_DIR, ".env")
 load_dotenv(env_path)
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or "change-this-secret-key"
+# ---------------------------------------------------------------------
+# FIX (Security): the old fallback was a fixed, publicly-known string
+# ("change-this-secret-key"). If SECRET_KEY was ever left unset, every
+# session cookie in production would be signed with a secret an
+# attacker could read straight out of this source file, letting them
+# forge login sessions. We now fall back to a random key instead, and
+# log a loud warning so the missing .env value gets noticed. Sessions
+# just won't survive an app restart until SECRET_KEY is set properly -
+# no worse than before, but no longer a static, guessable secret.
+# ---------------------------------------------------------------------
+_secret_key = os.getenv("SECRET_KEY")
+if not _secret_key:
+    _secret_key = secrets.token_hex(32)
+    logger.warning(
+        "SECRET_KEY not set in .env - using a random key for this run. "
+        "Sessions will be invalidated on every restart. Set SECRET_KEY in "
+        "your .env file for stable, secure sessions."
+    )
+app.config["SECRET_KEY"] = _secret_key
+
+# Harden session cookies for production (safe no-ops for local/dev use).
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# NOTE: defaults to False because the PyInstaller desktop build serves
+# the UI over plain http://127.0.0.1 (no TLS) - a Secure cookie would
+# silently break login there. Set SESSION_COOKIE_SECURE=true in the
+# Render .env (HTTPS-only deployment) to enable it there.
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+# Cap upload size (restore_database accepts file uploads) to prevent
+# large-file / decompression-bomb style denial-of-service uploads.
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB
 
 database_url = os.getenv("DATABASE_URL")
 
@@ -116,11 +145,14 @@ login_manager.login_view = "login"
 
 @login_manager.user_loader
 def load_user(user_id):
-
-    return db.session.get(
-Admin,
-int(user_id)
-)
+    # FIX: a tampered/stale session cookie could contain a non-numeric
+    # user_id. int() on that previously raised an uncaught ValueError,
+    # turning EVERY request (any page load) into a 500 error until the
+    # cookie was manually cleared. Fail safe -> treat as logged-out.
+    try:
+        return db.session.get(Admin, int(user_id))
+    except (TypeError, ValueError):
+        return None
 
 # ==========================
 # COMPANY SETTINGS MODEL
@@ -343,6 +375,35 @@ def _sort_customers(customers):
 
 
 # ==========================
+# CUSTOMER ALERT HELPER
+# Used by the Customer Ledger page. Computes a finer-grained status than
+# the plain Active/Closed `status` field:
+#   - "Settled"             -> status is already Closed (fully paid off)
+#   - "Collection Required" -> loan term (end_date) has passed but a
+#                               balance is still owed
+#   - "Active"               -> everything else (within term, still owing)
+# NOTE: this is display-only. It's set as a plain Python attribute on
+# each Customer object for template rendering and is never committed to
+# the database.
+# ==========================
+
+def _compute_alert(customer):
+    if customer.status == "Closed":
+        return "Settled"
+
+    try:
+        if customer.end_date:
+            end_dt = datetime.strptime(str(customer.end_date), "%Y-%m-%d")
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            if today > end_dt and (customer.remaining_balance or 0) > 0:
+                return "Collection Required"
+    except (ValueError, TypeError):
+        pass  # malformed/missing end_date -> fall through to "Active"
+
+    return "Active"
+
+
+# ==========================
 # HOME / REDIRECT
 # ==========================
 
@@ -470,17 +531,25 @@ def dashboard():
     today = datetime.now().strftime("%Y-%m-%d")
     current_month = datetime.now().strftime("%Y-%m")
 
-    payments = Payment.query.filter_by(user_id=current_user.id).all()
+    # FIX (Performance): the old code loaded EVERY payment row for the
+    # user into Python just to sum two numbers. At ~1,000 customers with
+    # years of daily payment history that's an ever-growing, unbounded
+    # query on every single dashboard load. Let Postgres do the sum.
+    from sqlalchemy import func
 
-    today_collection = sum(
-        p.amount for p in payments
-        if p.payment_date == today
-    )
+    today_collection = db.session.query(
+        func.coalesce(func.sum(Payment.amount), 0)
+    ).filter(
+        Payment.user_id == current_user.id,
+        Payment.payment_date == today
+    ).scalar()
 
-    month_collection = sum(
-        p.amount for p in payments
-        if p.payment_date.startswith(current_month)
-    )
+    month_collection = db.session.query(
+        func.coalesce(func.sum(Payment.amount), 0)
+    ).filter(
+        Payment.user_id == current_user.id,
+        Payment.payment_date.like(f"{current_month}%")
+    ).scalar()
 
     return render_template(
         "dashboard.html",
@@ -514,8 +583,18 @@ def add_customer():
         flash(f"Customer ID '{customer_id}' already exists.", "danger")
         return redirect(url_for("dashboard"))
 
-    loan_amount = float(request.form["loan_amount"])
-    daily_due = float(request.form["daily_due"])
+    # FIX: float() on bad/missing input used to raise an uncaught
+    # ValueError -> 500 error page instead of a friendly flash message.
+    try:
+        loan_amount = float(request.form["loan_amount"])
+        daily_due = float(request.form["daily_due"])
+    except (ValueError, TypeError):
+        flash("Loan Amount and Daily Due must be valid numbers.", "danger")
+        return redirect(url_for("dashboard"))
+
+    if loan_amount < 0 or daily_due < 0:
+        flash("Loan Amount and Daily Due cannot be negative.", "danger")
+        return redirect(url_for("dashboard"))
 
     start_date = request.form.get("start_date", "")
     end_date = request.form.get("end_date", "")
@@ -571,14 +650,33 @@ def add_customer():
 @app.route("/add_payment", methods=["POST"])
 @login_required
 def add_payment():
-    amount = float(request.form["amount"])
+    # FIX: float() on bad/missing input used to raise an uncaught
+    # ValueError -> 500 error page instead of a friendly flash message.
+    try:
+        amount = float(request.form["amount"])
+    except (ValueError, TypeError):
+        flash("Payment amount must be a valid number.", "danger")
+        return redirect(url_for("dashboard"))
+
+    if amount < 0:
+        flash("Payment amount cannot be negative.", "danger")
+        return redirect(url_for("dashboard"))
+
     customer_id = request.form["customer_id"]
     payment_date = request.form["payment_date"]
 
+    # FIX (Transaction safety): lock the customer row for the duration of
+    # this transaction with SELECT ... FOR UPDATE. Without this, two
+    # payments submitted for the same customer at nearly the same time
+    # could both read the same starting total_paid, and the second
+    # commit would silently overwrite (lose) the first payment's balance
+    # update - a real risk for a finance app where staff may double-tap
+    # "Save" or two collectors record the same customer concurrently.
+    # This is a no-op on SQLite but takes effect on PostgreSQL/Supabase.
     customer = Customer.query.filter_by(
         customer_id=customer_id,
         user_id=current_user.id
-    ).first()
+    ).with_for_update().first()
 
     # Check if a payment already exists for this customer on this date.
     # If it does, update it instead of inserting a duplicate row -
@@ -824,6 +922,9 @@ def export_daily_report_pdf(date):
 @app.route("/export_collection/<month>")
 @login_required
 def export_collection(month):
+    from sqlalchemy import func, cast, Integer
+    from collections import defaultdict
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Collection Sheet"
@@ -837,24 +938,53 @@ def export_collection(month):
     customers = Customer.query.filter_by(user_id=current_user.id).all()
     customers = _sort_customers(customers)
 
+    # ------------------------------------------------------------------
+    # FIX (N+1 query / performance): the old code ran ONE
+    # Payment.query.filter_by(...).all() PER CUSTOMER inside this loop,
+    # plus a second full-table Payment.query.filter_by(...).all() below
+    # for the summary row - for ~1,000 customers that's 1,000+ separate
+    # round trips to Supabase on every export. This is the exact N+1
+    # problem that was already fixed in export_collection_pdf but was
+    # left unfixed here in the Excel export. We now pull every payment
+    # for this user+month ONCE, pre-aggregated (SUM + GROUP BY) inside
+    # Postgres, into a small in-memory lookup:
+    #   payments_by_customer[customer_id][day] = total_amount_that_day
+    # ------------------------------------------------------------------
+    day_expr = cast(func.substr(Payment.payment_date, 9, 2), Integer)
+    payment_query = (
+        db.session.query(
+            Payment.customer_id,
+            day_expr.label("day"),
+            func.sum(Payment.amount).label("day_total")
+        )
+        .filter(
+            Payment.user_id == current_user.id,
+            Payment.payment_date.like(f"{month}%")
+        )
+        .group_by(Payment.customer_id, day_expr)
+    )
+
+    payments_by_customer = defaultdict(dict)   # {customer_id: {day: amount}}
+    day_totals = defaultdict(float)            # {day: total across ALL customers}
+    month_total_all = 0
+
+    for cust_id, day, day_total in payment_query.yield_per(500):
+        payments_by_customer[cust_id][day] = day_total
+        day_totals[day] += day_total
+        month_total_all += day_total
+
     for customer in customers:
         row = [customer.customer_id, customer.name, customer.loan_amount]
         month_total = 0
-
-        payments = Payment.query.filter_by(
-            customer_id=customer.customer_id,
-            user_id=current_user.id
-        ).all()
+        cust_payments = payments_by_customer.get(customer.customer_id, {})
 
         for day in range(1, 32):
-            value = "-"
-            for payment in payments:
-                if payment.payment_date.startswith(month):
-                    payment_day = int(payment.payment_date.split("-")[2])
-                    if payment_day == day:
-                        value = payment.amount
-                        month_total += payment.amount
-            row.append(value)
+            amt = cust_payments.get(day)
+            if amt is None:
+                row.append("-")
+            else:
+                row.append(amt)
+                month_total += amt
 
         row.extend([
             month_total,
@@ -864,24 +994,14 @@ def export_collection(month):
         ])
         ws.append(row)
 
-    # DAY TOTAL SUMMARY ROW
-    all_payments = Payment.query.filter_by(user_id=current_user.id).all()
-
-    month_total_all = sum(
-        p.amount for p in all_payments
-        if p.payment_date.startswith(month)
-    )
+    # DAY TOTAL SUMMARY ROW - built entirely from the aggregates computed
+    # in the single pass above (no second full-table Payment query).
     total_paid_all = sum(c.total_paid for c in customers)
     total_balance_all = sum(c.remaining_balance for c in customers)
 
     summary_row = ["DAY TOTAL", "", ""]
     for day in range(1, 32):
-        day_total = sum(
-            p.amount for p in all_payments
-            if p.payment_date.startswith(month) and
-            int(p.payment_date.split("-")[2]) == day
-        )
-        summary_row.append(day_total)
+        summary_row.append(day_totals.get(day, 0))
 
     summary_row.extend([month_total_all, total_paid_all, total_balance_all, "-"])
     ws.append(summary_row)
@@ -1127,6 +1247,14 @@ def export_collection_pdf(month):
 def customer_ledger():
     customers = Customer.query.filter_by(user_id=current_user.id).all()
     customers = _sort_customers(customers)
+
+    # FIX (Bug): customer_ledger.html reads customer.alert to render the
+    # Alert column and drive the "Collection Required" filter, but that
+    # attribute was never set here -> every row silently showed "Active"
+    # and the filter option matched nothing.
+    for customer in customers:
+        customer.alert = _compute_alert(customer)
+
     return render_template("customer_ledger.html", customers=customers)
 
 
@@ -1242,16 +1370,47 @@ def edit_customer(customer_id):
     ).first_or_404()
 
     if request.method == "POST":
+        # FIX: float() on bad/missing input used to raise an uncaught
+        # ValueError -> 500 error page instead of a friendly flash message.
+        try:
+            new_loan_amount = float(request.form["loan_amount"])
+            new_daily_due = float(request.form["daily_due"])
+        except (ValueError, TypeError):
+            flash("Loan Amount and Daily Due must be valid numbers.", "danger")
+            return redirect(url_for("edit_customer", customer_id=customer_id))
+
+        if new_loan_amount < 0 or new_daily_due < 0:
+            flash("Loan Amount and Daily Due cannot be negative.", "danger")
+            return redirect(url_for("edit_customer", customer_id=customer_id))
+
         customer.name        = request.form["name"]
         customer.mobile      = request.form["mobile"]
         customer.address     = request.form.get("address", customer.address or "")
-        customer.loan_amount = float(request.form["loan_amount"])
-        customer.daily_due   = float(request.form["daily_due"])
+        customer.loan_amount = new_loan_amount
+        customer.daily_due   = new_daily_due
         customer.end_date    = request.form.get("end_date", customer.end_date or "")
         customer.remaining_balance = customer.loan_amount - customer.total_paid
 
-        db.session.commit()
-        flash("Customer Updated Successfully")
+        # Re-apply the same Closed/Active rule used everywhere else so
+        # editing the loan amount can't leave status out of sync with
+        # the recalculated balance (e.g. increasing the loan on a
+        # previously "Closed" customer used to leave it stuck "Closed").
+        if customer.remaining_balance <= 0:
+            customer.remaining_balance = 0
+            customer.status = "Closed"
+        else:
+            customer.status = "Active"
+
+        # FIX (Missing rollback): a DB error mid-commit (lost connection,
+        # constraint violation) previously left the session in a broken
+        # state with no rollback, which can poison subsequent requests
+        # sharing the same pooled connection.
+        try:
+            db.session.commit()
+            flash("Customer Updated Successfully")
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error updating customer: {str(e)}", "danger")
         return redirect(url_for("customer_ledger"))
 
     return render_template("edit_customer.html", customer=customer)
@@ -1294,14 +1453,33 @@ def edit_payment(payment_id):
         user_id=current_user.id
     ).first_or_404()
 
-    customer = Customer.query.filter_by(
-        customer_id=payment.customer_id,
-        user_id=current_user.id
-    ).first()
-
     if request.method == "POST":
+        # FIX (Transaction safety): lock the customer row, same reasoning
+        # as add_payment - prevents lost updates if two edits land
+        # concurrently on the same customer's balance.
+        customer = Customer.query.filter_by(
+            customer_id=payment.customer_id,
+            user_id=current_user.id
+        ).with_for_update().first()
+
+        # FIX (Bug): if the customer record this payment points to was
+        # deleted separately (data drift) this used to raise
+        # AttributeError on customer.total_paid below -> 500 error.
+        if not customer:
+            flash("Cannot update this payment: its customer record no longer exists.", "danger")
+            return redirect(url_for("dashboard"))
+
         old_amount = payment.amount
-        new_amount = float(request.form["amount"])
+        try:
+            new_amount = float(request.form["amount"])
+        except (ValueError, TypeError):
+            flash("Payment amount must be a valid number.", "danger")
+            return redirect(url_for("edit_payment", payment_id=payment_id))
+
+        if new_amount < 0:
+            flash("Payment amount cannot be negative.", "danger")
+            return redirect(url_for("edit_payment", payment_id=payment_id))
+
         new_date = request.form["payment_date"]
 
         # If moving this payment to a date that already has a different
@@ -1351,10 +1529,19 @@ def delete_payment(payment_id):
         user_id=current_user.id
     ).first_or_404()
 
+    # FIX (Transaction safety): lock the row, same reasoning as add_payment.
     customer = Customer.query.filter_by(
         customer_id=payment.customer_id,
         user_id=current_user.id
-    ).first()
+    ).with_for_update().first()
+
+    # FIX (Bug): previously this crashed with AttributeError (500) if the
+    # customer record no longer existed for this payment.
+    if not customer:
+        db.session.delete(payment)
+        db.session.commit()
+        flash("Payment Deleted Successfully (its customer record was already gone)")
+        return redirect(url_for("dashboard"))
 
     customer.total_paid -= payment.amount
     customer.remaining_balance = customer.loan_amount - customer.total_paid
@@ -1649,8 +1836,12 @@ def company_settings():
         settings.address = request.form["address"]
         settings.phone = request.form["phone"]
 
-        db.session.commit()
-        flash("Settings Saved Successfully")
+        try:
+            db.session.commit()
+            flash("Settings Saved Successfully")
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error saving settings: {str(e)}", "danger")
         return redirect(url_for("company_settings"))
 
     return render_template("company_settings.html", settings=settings)
@@ -1684,7 +1875,17 @@ with app.app_context():
         )
 
         db.session.add(admin)
-        db.session.commit()
+        try:
+            db.session.commit()
+            logger.info("Default admin account created (username: admin).")
+        except IntegrityError:
+            # FIX (Deployment): this module runs once per gunicorn worker
+            # process on Render. With more than one worker, two workers
+            # can both see "no admin yet" and both try to insert the same
+            # row at startup; the loser previously crashed the whole
+            # worker with an unhandled IntegrityError instead of just
+            # noticing the other worker already created it.
+            db.session.rollback()
 
 
         # ==========================
