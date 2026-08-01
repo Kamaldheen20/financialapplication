@@ -219,11 +219,11 @@ function saveWorkingDate(value) {
 // value is picked — listening to both means the date is saved to
 // localStorage right away instead of only after the field loses focus.
 globalDate.addEventListener("change", function () {
-    saveWorkingDate(this.value);
-});
 
-globalDate.addEventListener("input", function () {
+    if (!this.value) return;
+
     saveWorkingDate(this.value);
+
 });
 
 // Safety net: whichever form is submitted, force-persist the current
@@ -291,11 +291,11 @@ function saveStartDate(value) {
 }
 
 startDate.addEventListener("change", function () {
-    saveStartDate(this.value);
-});
 
-startDate.addEventListener("input", function () {
+    if (!this.value) return;
+
     saveStartDate(this.value);
+
 });
 
 // ==============================
