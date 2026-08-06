@@ -264,7 +264,11 @@ const paymentForm = document.getElementById("paymentForm");
 
 function resolveCustomerSelection() {
 
-    const typed = customerSearch.value.trim();
+    // Normalize (NFC) before trimming: Tamil/other non-Latin text can
+    // reach this field via different Unicode combining-character
+    // sequences (typed vs. pasted vs. autofilled) that render identically
+    // but compare unequal without normalization.
+    const typed = customerSearch.value.normalize("NFC").trim();
 
     if (!typed) {
         customerIdHidden.value = "";
@@ -273,10 +277,36 @@ function resolveCustomerSelection() {
         return;
     }
 
-    // Exact match against a datalist option's visible value
+    // Match on the Reg. No. only - never on the full "REGNO - Name" text.
+    //
+    // FIX: this used to require the literal substring " - " (space,
+    // ASCII hyphen, space) to split out the id. That broke in practice:
+    // OS/keyboard autocorrect (Windows text replacement, Gboard,
+    // SwiftKey, etc.) frequently rewrites a typed "-" into an en-dash
+    // "–", or inserts a non-breaking space, which is visually identical
+    // but makes `typed.includes(" - ")` return false. When that happened,
+    // idPart fell back to the ENTIRE typed string (id + name), which can
+    // never equal a plain numeric data-id, so a perfectly valid,
+    // visibly-correct selection like "7001 - புனிதவல்லி" was rejected.
+    //
+    // Fix: don't depend on the separator's exact characters at all.
+    // Each option's data-id is always a prefix of its value, so just
+    // check whether the typed text starts with a known Reg. No., and
+    // that whatever comes right after it isn't more digits/letters
+    // (which would mean it's actually a longer/different id).
     const options = Array.from(customerOptions.querySelectorAll("option"));
     const match = options.find(function (opt) {
-        return opt.value === typed;
+        const id = (opt.getAttribute("data-id") || "").normalize("NFC");
+        if (!id) return false;
+        if (typed === id) return true;
+        if (typed.startsWith(id)) {
+            const rest = typed.slice(id.length);
+            // Whatever follows the id must be a separator (dash, space,
+            // colon, etc.), not more alphanumeric characters that would
+            // make it a different/longer id.
+            return rest.length === 0 || /^[^a-zA-Z0-9]/.test(rest);
+        }
+        return false;
     });
 
     if (match) {
@@ -299,7 +329,7 @@ if (paymentForm) {
         resolveCustomerSelection();
         if (!customerIdHidden.value) {
             e.preventDefault();
-            customerFeedback.textContent = "Pick a valid customer (Reg. No. - Name) before submitting";
+            customerFeedback.textContent = "Pick a valid customer (matching Reg. No.) before submitting";
             customerFeedback.classList.add("text-danger");
             customerSearch.focus();
         }
