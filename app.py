@@ -662,7 +662,22 @@ def add_payment():
         flash("Payment amount cannot be negative.", "danger")
         return redirect(url_for("dashboard"))
 
-    customer_id = request.form["customer_id"]
+    # FIX: the dashboard's Daily Due Collection now uses a searchable
+    # "Reg. No. - Name" field (datalist) instead of a <select>, backed by
+    # a hidden #customer_id_hidden input that only gets filled in when the
+    # typed text exactly matches a real customer. If nothing was matched
+    # (blank search, JS didn't run, stale page, etc.) that hidden field
+    # posts as "" - previously that empty string was accepted here, a
+    # Payment row got created with customer_id="", and it silently never
+    # showed up in the Collection Sheet / Daily Report / Customer Ledger
+    # because nothing joins to an empty customer_id. Reject it up front
+    # instead of saving an orphaned payment.
+    customer_id = request.form.get("customer_id", "").strip()
+
+    if not customer_id:
+        flash("Please pick a customer from the search box before saving the payment.", "danger")
+        return redirect(url_for("dashboard"))
+
     payment_date = request.form["payment_date"]
 
     # FIX (Transaction safety): lock the customer row for the duration of
@@ -677,6 +692,14 @@ def add_payment():
         customer_id=customer_id,
         user_id=current_user.id
     ).with_for_update().first()
+
+    # FIX: if the id made it through non-empty but still doesn't match any
+    # customer of this user (typo, stale/duplicate id, wrong account),
+    # the old code carried on anyway - inserting a Payment row that has
+    # no matching Customer and, again, never appears in any report.
+    if not customer:
+        flash(f"No customer found with ID '{customer_id}'. Payment was not saved.", "danger")
+        return redirect(url_for("dashboard"))
 
     # Check if a payment already exists for this customer on this date.
     # If it does, update it instead of inserting a duplicate row -
