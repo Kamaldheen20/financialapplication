@@ -99,6 +99,14 @@
 <script>
 (function () {
 
+  // Logged-in user's id, injected from the server side. This makes the
+  // temp-save storage key unique per user (see storageKey() below) so
+  // one user's unsaved/unsent rows never leak into another user's
+  // session on the same browser/device.
+  // NOTE: adjust "{{ current_user.id }}" to whatever your Flask session
+  // actually exposes (e.g. session['user_id'], current_user.username).
+  const CURRENT_USER_ID = "{{ current_user.id }}";
+
   const regNoInput = document.getElementById("regNoInput");
   const addBtn = document.getElementById("addBtn");
   const uploadAllBtn = document.getElementById("uploadAllBtn");
@@ -184,7 +192,7 @@
   // ==============================
 
   function storageKey() {
-    return "camtRows_" + workingDate;
+    return "camtRows_" + CURRENT_USER_ID + "_" + workingDate;
   }
 
   function saveRowsToStorage() {
