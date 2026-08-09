@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Amount Update</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  .card { border-radius: 12px; }
+  #regNoInput { font-size: 1.15rem; }
+  .row-uploaded { background-color: #f1f8f4; }
+  .customer-row td { vertical-align: middle; }
+  .mobile-card { border: 1px solid #dee2e6; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+  .mobile-card.row-uploaded { border-color: #198754; }
+  @media (max-width: 767.98px) {
+    .desktop-table { display: none; }
+  }
+  @media (min-width: 768px) {
+    .mobile-list { display: none; }
+  }
+</style>
+</head>
+<body class="bg-light">
+
+<div class="container mt-4 mb-5">
+
+  <!-- Header -->
+  <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0">Customer Amount Update</h2>
+    <a href="/dashboard" class="btn btn-outline-dark">&larr; Dashboard</a>
+  </div>
+
+  <!-- Working Date + Live Counters -->
+  <div class="card shadow p-3 mb-4">
+    <div class="row g-3 align-items-end">
+      <div class="col-12 col-md-4">
+        <div class="text-muted small mb-1">Working Date</div>
+        <input type="date" id="workingDateInput" class="form-control form-control-lg">
+      </div>
+      <div class="col-6 col-md-4 text-center">
+        <div class="text-muted small">Today's Customers</div>
+        <div class="fs-5 fw-semibold" id="todaysCustomers">0</div>
+      </div>
+      <div class="col-6 col-md-4 text-center">
+        <div class="text-muted small">Today's Total Collection</div>
+        <div class="fs-5 fw-semibold" id="todaysTotal">&#8377;0</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alert area for feedback -->
+  <div id="alertArea"></div>
+
+  <!-- Reg No Entry -->
+  <div class="card shadow p-3 mb-4">
+    <h5 class="mb-3">Customer Reg No</h5>
+    <div class="d-flex gap-2">
+      <input type="text" id="regNoInput" class="form-control form-control-lg"
+             placeholder="Enter Reg No" autocomplete="off">
+      <button class="btn btn-success btn-lg" id="addBtn" type="button">Add</button>
+    </div>
+    <small class="text-muted d-block mt-2">Type or scan a registration number — it's added automatically as soon as it matches a customer, or press Enter / tap Add.</small>
+  </div>
+
+  <!-- Customer List (desktop table) -->
+  <div class="card shadow p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+      <h5 class="mb-0">Today's Collection Entries</h5>
+      <button type="button" class="btn btn-primary" id="uploadAllBtn">Upload</button>
+    </div>
+
+    <div class="table-responsive desktop-table">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th>Reg No</th>
+            <th>Name</th>
+            <th>Due</th>
+            <th style="width: 180px;">Amount</th>
+            <th style="width: 160px;">Status</th>
+          </tr>
+        </thead>
+        <tbody id="rowsTableBody">
+          <tr id="emptyRowDesktop">
+            <td colspan="5" class="text-center text-muted py-4">No customers added yet.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Mobile card list -->
+    <div class="mobile-list" id="rowsMobileList">
+      <div class="text-center text-muted py-4" id="emptyRowMobile">No customers added yet.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+
+  const regNoInput = document.getElementById("regNoInput");
+  const addBtn = document.getElementById("addBtn");
+  const uploadAllBtn = document.getElementById("uploadAllBtn");
+  const workingDateInput = document.getElementById("workingDateInput");
+  const todaysCustomersEl = document.getElementById("todaysCustomers");
+  const todaysTotalEl = document.getElementById("todaysTotal");
+  const alertArea = document.getElementById("alertArea");
+
+  const tableBody = document.getElementById("rowsTableBody");
+  const emptyRowDesktop = document.getElementById("emptyRowDesktop");
+  const mobileList = document.getElementById("rowsMobileList");
+  const emptyRowMobile = document.getElementById("emptyRowMobile");
+
+  // ==============================
+  // Working Date — reuses the SAME localStorage key ("workingDate") the
+  // dashboard uses, so changing the date here (or on the dashboard)
+  // stays in sync everywhere. No independent date system is created.
+  // ==============================
+
+  const today = new Date().toISOString().split("T")[0];
+  let workingDate = localStorage.getItem("workingDate") || today;
+
+  workingDateInput.value = workingDate;
+
+  workingDateInput.addEventListener("change", function () {
+    if (!this.value) return;
+    workingDate = this.value;
+    localStorage.setItem("workingDate", workingDate);
+  });
+
+  // ==============================
+  // Live counters
+  // ==============================
+
+  let todaysCustomers = 0;
+  let todaysTotal = 0;
+
+  function refreshCounters() {
+    todaysCustomersEl.textContent = todaysCustomers;
+    todaysTotalEl.textContent = "\u20B9" + todaysTotal.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
+  // ==============================
+  // Alerts
+  // ==============================
+
+  function showAlert(message, type) {
+    const div = document.createElement("div");
+    div.className = `alert alert-${type} alert-dismissible fade show`;
+    div.role = "alert";
+    div.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+    alertArea.prepend(div);
+    setTimeout(function () {
+      if (div.parentNode) div.remove();
+    }, 5000);
+  }
+
+  // ==============================
+  // Row tracking — one entry per customer_id added to the live list.
+  // ==============================
+
+  const rows = {}; // customer_id -> { desktopRow, mobileCard, uploaded, amountInput, uploadBtn }
+
+  function updateEmptyState() {
+    const hasRows = Object.keys(rows).length > 0;
+    emptyRowDesktop.style.display = hasRows ? "none" : "";
+    emptyRowMobile.style.display = hasRows ? "none" : "";
+  }
+
+  function money(n) {
+    const val = Number(n) || 0;
+    return "\u20B9" + val.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
+  function addCustomerRow(customer, alreadyCollected) {
+    const customerId = customer.customer_id;
+
+    if (rows[customerId]) {
+      showAlert(`${customerId} is already in today's list.`, "warning");
+      return;
+    }
+
+    // ---- Desktop table row ----
+    const tr = document.createElement("tr");
+    tr.className = "customer-row";
+    tr.dataset.customerId = customerId;
+
+    const dueDisplay = money(customer.remaining_balance);
+
+    tr.innerHTML = `
+      <td class="fw-semibold">${escapeHtml(customerId)}</td>
+      <td>${escapeHtml(customer.name || "")}</td>
+      <td>${dueDisplay}</td>
+      <td>
+        <input type="number" step="0.01" min="0.01" class="form-control amount-input" placeholder="Amount">
+      </td>
+      <td><span class="status-text text-muted">Pending</span></td>
+    `;
+
+    tableBody.appendChild(tr);
+
+    // ---- Mobile card ----
+    const card = document.createElement("div");
+    card.className = "mobile-card";
+    card.dataset.customerId = customerId;
+    card.innerHTML = `
+      <div class="d-flex justify-content-between">
+        <div>
+          <div class="fw-semibold">${escapeHtml(customerId)}</div>
+          <div class="text-muted small">${escapeHtml(customer.name || "")}</div>
+        </div>
+        <div class="text-end">
+          <div class="text-muted small">Due</div>
+          <div>${dueDisplay}</div>
+        </div>
+      </div>
+      <div class="d-flex gap-2 mt-2 align-items-center">
+        <input type="number" step="0.01" min="0.01" class="form-control amount-input" placeholder="Amount">
+        <span class="status-text text-muted text-nowrap">Pending</span>
+      </div>
+    `;
+
+    mobileList.appendChild(card);
+
+    const rowState = {
+      desktopRow: tr,
+      mobileCard: card,
+      uploaded: false
+    };
+    rows[customerId] = rowState;
+
+    function getAmountInputs() {
+      return [tr.querySelector(".amount-input"), card.querySelector(".amount-input")];
+    }
+
+    // Keep both amount inputs (desktop + mobile) in sync
+    getAmountInputs().forEach(function (input) {
+      input.addEventListener("input", function () {
+        getAmountInputs().forEach(function (other) {
+          if (other !== input) other.value = input.value;
+        });
+      });
+    });
+
+    if (alreadyCollected) {
+      markRowUploaded(customerId, null, "Already collected");
+    }
+
+    updateEmptyState();
+  }
+
+  function markRowUploaded(customerId, amount, label) {
+    const state = rows[customerId];
+    if (!state || state.uploaded) return;
+
+    state.uploaded = true;
+
+    [state.desktopRow, state.mobileCard].forEach(function (el) {
+      el.classList.add("row-uploaded");
+      const amountInput = el.querySelector(".amount-input");
+      const statusText = el.querySelector(".status-text");
+
+      if (amountInput) {
+        const wrapper = document.createElement("span");
+        wrapper.className = "fw-semibold text-success";
+        wrapper.textContent = amount !== null ? money(amount) : "";
+        amountInput.replaceWith(wrapper);
+      }
+
+      if (statusText) {
+        statusText.textContent = label || "\u2713 Uploaded";
+        statusText.classList.remove("text-muted", "text-danger");
+        statusText.classList.add("text-success", "fw-semibold");
+      }
+    });
+  }
+
+  function markRowFailed(customerId, label) {
+    const state = rows[customerId];
+    if (!state) return;
+
+    [state.desktopRow, state.mobileCard].forEach(function (el) {
+      const statusText = el.querySelector(".status-text");
+      if (statusText) {
+        statusText.textContent = label || "Failed";
+        statusText.classList.remove("text-muted", "text-success");
+        statusText.classList.add("text-danger");
+      }
+    });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str == null ? "" : String(str);
+    return div.innerHTML;
+  }
+
+  // ==============================
+  // Lookup (Add) flow
+  // ==============================
+  // Two paths in to the same lookup+add logic:
+  //   1. Manual: Enter key / Add button — shows an error if not found.
+  //   2. Automatic: as soon as the typed text exactly matches a real
+  //      customer ID, it's looked up and added on its own (debounced
+  //      briefly so we don't fire a request on every keystroke). Silent
+  //      on "not found" since the user may still be mid-typing.
+
+  let autoAddTimer = null;
+
+  function performLookup(regNo) {
+    return fetch("/api/customer-amount-update/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customer_id: regNo, working_date: workingDate })
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, data: data };
+      });
+    });
+  }
+
+  function handleAdd() {
+    const raw = regNoInput.value.normalize("NFC").trim();
+
+    if (!raw) {
+      regNoInput.focus();
+      return;
+    }
+
+    if (rows[raw]) {
+      showAlert(`${raw} is already in today's list.`, "warning");
+      regNoInput.value = "";
+      regNoInput.focus();
+      return;
+    }
+
+    if (autoAddTimer) {
+      clearTimeout(autoAddTimer);
+      autoAddTimer = null;
+    }
+
+    addBtn.disabled = true;
+
+    performLookup(raw)
+      .then(function (result) {
+        if (!result.ok) {
+          showAlert(result.data.error || "Customer not found. Please check the registration number.", "danger");
+          return;
+        }
+        addCustomerRow(result.data, result.data.already_collected);
+      })
+      .catch(function () {
+        showAlert("Could not reach the server. Please check your connection and try again.", "danger");
+      })
+      .finally(function () {
+        addBtn.disabled = false;
+        regNoInput.value = "";
+        regNoInput.focus();
+      });
+  }
+
+  addBtn.addEventListener("click", handleAdd);
+
+  regNoInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAdd();
+    }
+  });
+
+  // Auto-add: after a short pause in typing, silently check whether the
+  // current text is an exact, existing customer ID. If so, add it and
+  // clear the field — no need to press Enter at all.
+  regNoInput.addEventListener("input", function () {
+    if (autoAddTimer) clearTimeout(autoAddTimer);
+
+    const raw = regNoInput.value.normalize("NFC").trim();
+
+    if (!raw || rows[raw]) return;
+
+    autoAddTimer = setTimeout(function () {
+      // Make sure the field hasn't changed (or been cleared/submitted)
+      // since this check was scheduled.
+      const current = regNoInput.value.normalize("NFC").trim();
+      if (current !== raw || rows[raw]) return;
+
+      performLookup(raw).then(function (result) {
+        // Field may have moved on to something else while this was
+        // in flight — only act if it's still the same exact value.
+        const stillCurrent = regNoInput.value.normalize("NFC").trim() === raw;
+        if (!stillCurrent || rows[raw]) return;
+
+        if (result.ok) {
+          addCustomerRow(result.data, result.data.already_collected);
+          regNoInput.value = "";
+        }
+        // Silent on not-found — the user may still be mid-typing a
+        // longer ID, or it may just not exist; they'll get an explicit
+        // error if they press Enter / Add themselves.
+      }).catch(function () {
+        // Silent — this is a background check, not a user action.
+      }).finally(function () {
+        regNoInput.focus();
+      });
+    }, 350);
+  });
+
+  // ==============================
+  // Upload flow — single button uploads every pending row that has a
+  // valid amount entered. Each row is sent to the server independently
+  // so one bad/duplicate row never blocks the others; failures are
+  // shown inline on that row and in a summary alert.
+  // ==============================
+
+  function uploadOne(customerId, amount) {
+    return fetch("/api/customer-amount-update/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customer_id: customerId,
+        amount: amount,
+        payment_date: workingDate
+      })
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, data: data };
+      });
+    });
+  }
+
+  function handleUploadAll() {
+    const pending = Object.keys(rows).filter(function (id) { return !rows[id].uploaded; });
+
+    if (pending.length === 0) {
+      showAlert("No pending entries to upload.", "warning");
+      return;
+    }
+
+    const toUpload = [];
+    let hasError = false;
+
+    pending.forEach(function (customerId) {
+      const state = rows[customerId];
+      const amountInput = state.desktopRow.querySelector(".amount-input");
+      const rawAmount = amountInput ? amountInput.value.trim() : "";
+
+      if (!rawAmount) {
+        markRowFailed(customerId, "Enter amount");
+        hasError = true;
+        return;
+      }
+
+      const amount = parseFloat(rawAmount);
+
+      if (isNaN(amount)) {
+        markRowFailed(customerId, "Invalid amount");
+        hasError = true;
+        return;
+      }
+
+      if (amount <= 0) {
+        markRowFailed(customerId, "Must be > 0");
+        hasError = true;
+        return;
+      }
+
+      toUpload.push({ customerId: customerId, amount: amount });
+    });
+
+    if (toUpload.length === 0) {
+      showAlert("Please enter a valid amount for at least one customer.", "danger");
+      return;
+    }
+
+    if (hasError) {
+      showAlert("Some rows are missing a valid amount and were skipped. Fix them and upload again if needed.", "warning");
+    }
+
+    uploadAllBtn.disabled = true;
+    addBtn.disabled = true;
+
+    let successCount = 0;
+    let successTotal = 0;
+    let failCount = 0;
+
+    // Sequential (not parallel) so row-level locking on the server
+    // behaves predictably and status updates land in a stable order.
+    let chain = Promise.resolve();
+
+    toUpload.forEach(function (item) {
+      chain = chain.then(function () {
+        return uploadOne(item.customerId, item.amount).then(function (result) {
+          if (!result.ok) {
+            markRowFailed(item.customerId, result.data.error || "Failed");
+            failCount += 1;
+            return;
+          }
+          markRowUploaded(item.customerId, result.data.amount, "\u2713 Uploaded");
+          successCount += 1;
+          successTotal += result.data.amount;
+        }).catch(function () {
+          markRowFailed(item.customerId, "Network error");
+          failCount += 1;
+        });
+      });
+    });
+
+    chain.then(function () {
+      if (successCount > 0) {
+        todaysCustomers += successCount;
+        todaysTotal += successTotal;
+        refreshCounters();
+      }
+
+      if (failCount === 0 && successCount > 0) {
+        showAlert(`${successCount} payment(s) uploaded successfully (${money(successTotal)}).`, "success");
+      } else if (successCount > 0 && failCount > 0) {
+        showAlert(`${successCount} uploaded, ${failCount} failed. Check the Status column.`, "warning");
+      } else if (successCount === 0) {
+        showAlert("Upload failed for all entries. Check the Status column.", "danger");
+      }
+    }).finally(function () {
+      uploadAllBtn.disabled = false;
+      addBtn.disabled = false;
+    });
+  }
+
+  uploadAllBtn.addEventListener("click", handleUploadAll);
+
+  // ==============================
+  // Initial focus
+  // ==============================
+
+  refreshCounters();
+  regNoInput.focus();
+
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

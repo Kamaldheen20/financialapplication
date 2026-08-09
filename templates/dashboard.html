@@ -104,35 +104,12 @@
       </div>
     </div>
 
-    <!-- Daily Collection -->
+    <!-- Customer Amount Update -->
     <div class="col-md-6">
       <div class="card shadow p-3 mb-4">
-        <h4 class="mb-3">Daily Due Collection</h4>
-        <form method="POST" action="/add_payment" id="paymentForm">
-
-          <label class="form-label">Customer</label>
-          <input type="text" id="customerSearch" class="form-control mb-1"
-                 placeholder="Type Reg. No. or Name..." list="customerOptions"
-                 autocomplete="off" required>
-          <datalist id="customerOptions">
-            {% for customer in customers %}
-              <option data-id="{{ customer.customer_id }}"
-                      value="{{ customer.customer_id }} - {{ customer.name }}">
-              </option>
-            {% endfor %}
-          </datalist>
-          <input type="hidden" name="customer_id" id="customer_id_hidden">
-          <small id="customerSearchFeedback" class="text-muted d-block mb-2"></small>
-
-          <label class="form-label">Payment Date</label>
-          <input type="date" name="payment_date" id="payment_date"
-                 class="form-control mb-2" required>
-
-          <input type="number" step="0.01" name="amount"
-                 class="form-control mb-3" placeholder="Collected Amount" required>
-
-          <button class="btn btn-primary w-100" type="submit">Update Due</button>
-        </form>
+        <h4 class="mb-3">Customer Amount Update</h4>
+        <p class="text-muted">Quickly record today's customer collections.</p>
+        <a href="/customer-amount-update" class="btn btn-primary w-100">Open Amount Update</a>
       </div>
     </div>
 
@@ -144,7 +121,6 @@
 const globalDate = document.getElementById("globalDate");
 const startDate = document.getElementById("start_date");
 const endDate = document.getElementById("end_date");
-const paymentDate = document.getElementById("payment_date");
 
 // ==============================
 // Working Date
@@ -156,7 +132,6 @@ const savedDate =
 localStorage.getItem("workingDate") || today;
 
 globalDate.value = savedDate;
-paymentDate.value = savedDate;
 
 // Customer Registration's Start Date is INDEPENDENT of Working Date —
 // it has its own separate localStorage key and is never overwritten
@@ -216,8 +191,6 @@ function saveWorkingDate(value) {
         value
     );
 
-    paymentDate.value = value;
-
     // Start Date is independent — Working Date no longer touches it.
 }
 
@@ -245,96 +218,6 @@ document.querySelectorAll("form").forEach(function (form) {
         }
     });
 });
-
-// ==============================
-// Daily Collection: search customer by Reg. No.
-// ==============================
-// The datalist option text is "REGNO - Name". Chrome/Edge/Firefox filter
-// datalist suggestions by matching the typed text against the option's
-// VALUE, so typing the reg number (or part of it) narrows the list live.
-// Once the user picks (or types) an exact match, we pull the real
-// customer_id out of data-id and stash it in the hidden field that
-// actually gets posted to /add_payment.
-
-const customerSearch = document.getElementById("customerSearch");
-const customerIdHidden = document.getElementById("customer_id_hidden");
-const customerFeedback = document.getElementById("customerSearchFeedback");
-const customerOptions = document.getElementById("customerOptions");
-const paymentForm = document.getElementById("paymentForm");
-
-function resolveCustomerSelection() {
-
-    // Normalize (NFC) before trimming: Tamil/other non-Latin text can
-    // reach this field via different Unicode combining-character
-    // sequences (typed vs. pasted vs. autofilled) that render identically
-    // but compare unequal without normalization.
-    const typed = customerSearch.value.normalize("NFC").trim();
-
-    if (!typed) {
-        customerIdHidden.value = "";
-        customerFeedback.textContent = "";
-        customerFeedback.classList.remove("text-danger");
-        return;
-    }
-
-    // Match on the Reg. No. only - never on the full "REGNO - Name" text.
-    //
-    // FIX: this used to require the literal substring " - " (space,
-    // ASCII hyphen, space) to split out the id. That broke in practice:
-    // OS/keyboard autocorrect (Windows text replacement, Gboard,
-    // SwiftKey, etc.) frequently rewrites a typed "-" into an en-dash
-    // "–", or inserts a non-breaking space, which is visually identical
-    // but makes `typed.includes(" - ")` return false. When that happened,
-    // idPart fell back to the ENTIRE typed string (id + name), which can
-    // never equal a plain numeric data-id, so a perfectly valid,
-    // visibly-correct selection like "7001 - புனிதவல்லி" was rejected.
-    //
-    // Fix: don't depend on the separator's exact characters at all.
-    // Each option's data-id is always a prefix of its value, so just
-    // check whether the typed text starts with a known Reg. No., and
-    // that whatever comes right after it isn't more digits/letters
-    // (which would mean it's actually a longer/different id).
-    const options = Array.from(customerOptions.querySelectorAll("option"));
-    const match = options.find(function (opt) {
-        const id = (opt.getAttribute("data-id") || "").normalize("NFC");
-        if (!id) return false;
-        if (typed === id) return true;
-        if (typed.startsWith(id)) {
-            const rest = typed.slice(id.length);
-            // Whatever follows the id must be a separator (dash, space,
-            // colon, etc.), not more alphanumeric characters that would
-            // make it a different/longer id.
-            return rest.length === 0 || /^[^a-zA-Z0-9]/.test(rest);
-        }
-        return false;
-    });
-
-    if (match) {
-        customerIdHidden.value = match.getAttribute("data-id");
-        customerFeedback.textContent = "Selected: " + match.value;
-        customerFeedback.classList.remove("text-danger");
-    } else {
-        // No exact match yet (still typing) — clear the hidden id so a
-        // half-typed reg number can never be submitted as valid.
-        customerIdHidden.value = "";
-        customerFeedback.textContent = "No matching customer selected yet";
-        customerFeedback.classList.add("text-danger");
-    }
-}
-
-customerSearch.addEventListener("input", resolveCustomerSelection);
-
-if (paymentForm) {
-    paymentForm.addEventListener("submit", function (e) {
-        resolveCustomerSelection();
-        if (!customerIdHidden.value) {
-            e.preventDefault();
-            customerFeedback.textContent = "Pick a valid customer (matching Reg. No.) before submitting";
-            customerFeedback.classList.add("text-danger");
-            customerSearch.focus();
-        }
-    });
-}
 
 // ==============================
 // Prevent Enter key from submitting
