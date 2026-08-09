@@ -127,6 +127,8 @@
     if (!this.value) return;
     workingDate = this.value;
     localStorage.setItem("workingDate", workingDate);
+    clearAllRowsUI();
+    restoreRows();
   });
 
   // ==============================
@@ -160,7 +162,7 @@
   // Row tracking — one entry per customer_id added to the live list.
   // ==============================
 
-  const rows = {}; // customer_id -> { desktopRow, mobileCard, uploaded, amountInput, uploadBtn }
+  const rows = {}; // customer_id -> { desktopRow, mobileCard, uploaded, name, remaining_balance }
 
   function updateEmptyState() {
     const hasRows = Object.keys(rows).length > 0;
@@ -173,7 +175,84 @@
     return "\u20B9" + val.toLocaleString("en-IN", { maximumFractionDigits: 0 });
   }
 
-  function addCustomerRow(customer, alreadyCollected) {
+  // ==============================
+  // Persistence — so an accidental back/refresh/tab-close before hitting
+  // Upload doesn't lose customers already added (and any amount typed
+  // in). Saved per Working Date, since that's what the entries belong
+  // to. Cleared once a row is confirmed uploaded to the server, since at
+  // that point the payment is safely in the database already.
+  // ==============================
+
+  function storageKey() {
+    return "camtRows_" + workingDate;
+  }
+
+  function saveRowsToStorage() {
+    const data = Object.keys(rows).map(function (id) {
+      const state = rows[id];
+      const amountInput = state.desktopRow.querySelector(".amount-input");
+      return {
+        customer_id: id,
+        name: state.name,
+        remaining_balance: state.remaining_balance,
+        amount: amountInput ? amountInput.value : (state.finalAmount != null ? state.finalAmount : ""),
+        uploaded: state.uploaded,
+        statusLabel: state.statusLabel || null
+      };
+    });
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify(data));
+    } catch (e) {
+      // Storage full/unavailable — non-fatal, just skip persistence.
+    }
+  }
+
+  function clearAllRowsUI() {
+    Object.keys(rows).forEach(function (id) { delete rows[id]; });
+    tableBody.querySelectorAll(".customer-row").forEach(function (el) { el.remove(); });
+    mobileList.querySelectorAll(".mobile-card").forEach(function (el) { el.remove(); });
+    todaysCustomers = 0;
+    todaysTotal = 0;
+    refreshCounters();
+    updateEmptyState();
+  }
+
+  function restoreRows() {
+    let saved = [];
+    try {
+      saved = JSON.parse(localStorage.getItem(storageKey()) || "[]");
+    } catch (e) {
+      saved = [];
+    }
+
+    saved.forEach(function (item) {
+      addCustomerRow({
+        customer_id: item.customer_id,
+        name: item.name,
+        remaining_balance: item.remaining_balance
+      }, false, /* restoring */ true);
+
+      const state = rows[item.customer_id];
+      if (!state) return;
+
+      if (item.amount) {
+        [state.desktopRow, state.mobileCard].forEach(function (el) {
+          const input = el.querySelector(".amount-input");
+          if (input) input.value = item.amount;
+        });
+      }
+
+      if (item.uploaded) {
+        markRowUploaded(item.customer_id, item.amount, item.statusLabel || "\u2713 Uploaded");
+        todaysCustomers += 1;
+        todaysTotal += parseFloat(item.amount) || 0;
+      }
+    });
+
+    refreshCounters();
+  }
+
+  function addCustomerRow(customer, alreadyCollected, restoring) {
     const customerId = customer.customer_id;
 
     if (rows[customerId]) {
@@ -226,7 +305,9 @@
     const rowState = {
       desktopRow: tr,
       mobileCard: card,
-      uploaded: false
+      uploaded: false,
+      name: customer.name || "",
+      remaining_balance: customer.remaining_balance
     };
     rows[customerId] = rowState;
 
@@ -234,12 +315,14 @@
       return [tr.querySelector(".amount-input"), card.querySelector(".amount-input")];
     }
 
-    // Keep both amount inputs (desktop + mobile) in sync
+    // Keep both amount inputs (desktop + mobile) in sync, and persist
+    // whatever's typed so it survives an accidental refresh/navigation.
     getAmountInputs().forEach(function (input) {
       input.addEventListener("input", function () {
         getAmountInputs().forEach(function (other) {
           if (other !== input) other.value = input.value;
         });
+        saveRowsToStorage();
       });
     });
 
@@ -248,6 +331,10 @@
     }
 
     updateEmptyState();
+
+    if (!restoring) {
+      saveRowsToStorage();
+    }
   }
 
   function markRowUploaded(customerId, amount, label) {
@@ -255,6 +342,8 @@
     if (!state || state.uploaded) return;
 
     state.uploaded = true;
+    state.finalAmount = amount;
+    state.statusLabel = label || "\u2713 Uploaded";
 
     [state.desktopRow, state.mobileCard].forEach(function (el) {
       el.classList.add("row-uploaded");
@@ -269,11 +358,13 @@
       }
 
       if (statusText) {
-        statusText.textContent = label || "\u2713 Uploaded";
+        statusText.textContent = state.statusLabel;
         statusText.classList.remove("text-muted", "text-danger");
         statusText.classList.add("text-success", "fw-semibold");
       }
     });
+
+    saveRowsToStorage();
   }
 
   function markRowFailed(customerId, label) {
@@ -529,10 +620,12 @@
   uploadAllBtn.addEventListener("click", handleUploadAll);
 
   // ==============================
-  // Initial focus
+  // Initial load — restore anything left over from before an accidental
+  // refresh/navigation, then focus the input for fast entry.
   // ==============================
 
   refreshCounters();
+  restoreRows();
   regNoInput.focus();
 
 })();
