@@ -17,7 +17,8 @@ from flask import (
     url_for,
     flash,
     send_file,
-    session
+    session,
+    jsonify
 )
 
 
@@ -746,6 +747,168 @@ def add_payment():
     db.session.commit()
 
     return redirect(url_for("dashboard"))
+
+
+# ==========================
+# CUSTOMER AMOUNT UPDATE
+# Fast, dedicated collection-entry page (replaces the old Daily Due
+# Collection form that used to live on the dashboard). Reuses the same
+# Customer/Payment models and financial logic as /add_payment, but:
+#   - Talks JSON over fetch() instead of doing full-page form posts.
+#   - Blocks duplicate collections for the same customer/date outright,
+#     rather than silently upserting like the legacy dashboard form did
+#     (see requirement: prevent accidental double-entry during fast,
+#     continuous reg-no scanning).
+#   - Never trusts customer_id / amount / date sent by JS; everything is
+#     re-validated server-side exactly like the legacy route.
+# The Working Date itself is still a client-only (localStorage) concept,
+# same as before - it's passed in on every request rather than stored
+# server-side, so this page automatically follows whatever Working Date
+# is set elsewhere in the app.
+# ==========================
+
+@app.route("/customer-amount-update")
+@login_required
+def customer_amount_update():
+    return render_template("customer_amount_update.html")
+
+
+@app.route("/api/customer-amount-update/lookup", methods=["POST"])
+@login_required
+def api_customer_amount_update_lookup():
+    data = request.get_json(silent=True) or {}
+
+    customer_id = str(data.get("customer_id", "")).strip()
+    working_date = str(data.get("working_date", "")).strip()
+
+    if not customer_id:
+        return jsonify({"error": "Please enter a registration number."}), 400
+
+    customer = Customer.query.filter_by(
+        customer_id=customer_id,
+        user_id=current_user.id
+    ).first()
+
+    if not customer:
+        return jsonify({
+            "error": "Customer not found. Please check the registration number."
+        }), 404
+
+    already_collected = False
+    if working_date:
+        already_collected = Payment.query.filter_by(
+            customer_id=customer.customer_id,
+            payment_date=working_date,
+            user_id=current_user.id
+        ).first() is not None
+
+    return jsonify({
+        "customer_id": customer.customer_id,
+        "name": customer.name,
+        "daily_due": customer.daily_due or 0,
+        "remaining_balance": customer.remaining_balance or 0,
+        "status": customer.status,
+        "already_collected": already_collected
+    })
+
+
+@app.route("/api/customer-amount-update/upload", methods=["POST"])
+@login_required
+def api_customer_amount_update_upload():
+    data = request.get_json(silent=True) or {}
+
+    customer_id = str(data.get("customer_id", "")).strip()
+    payment_date = str(data.get("payment_date", "")).strip()
+    raw_amount = data.get("amount", "")
+
+    if not customer_id:
+        return jsonify({"error": "Customer registration number is required."}), 400
+
+    if not payment_date:
+        return jsonify({"error": "Working Date is missing. Please reload the page."}), 400
+
+    try:
+        datetime.strptime(payment_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid Working Date."}), 400
+
+    # FIX: reject non-numeric / missing amounts before touching the DB,
+    # same reasoning as /add_payment.
+    try:
+        amount = float(raw_amount)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Please enter a valid amount."}), 400
+
+    if amount <= 0:
+        return jsonify({"error": "Amount must be greater than zero."}), 400
+
+    try:
+        # Lock the customer row for the duration of this transaction -
+        # same reasoning as /add_payment: prevents two near-simultaneous
+        # collections for the same customer from losing an update.
+        customer = Customer.query.filter_by(
+            customer_id=customer_id,
+            user_id=current_user.id
+        ).with_for_update().first()
+
+        if not customer:
+            db.session.rollback()
+            return jsonify({
+                "error": "Customer not found. Please check the registration number."
+            }), 404
+
+        # Duplicate protection: unlike the legacy /add_payment route
+        # (which updates an existing same-day payment instead of
+        # rejecting it), this quick-entry flow must not silently
+        # overwrite a prior collection - block it outright per spec.
+        existing_payment = Payment.query.filter_by(
+            customer_id=customer.customer_id,
+            payment_date=payment_date,
+            user_id=current_user.id
+        ).with_for_update().first()
+
+        if existing_payment:
+            db.session.rollback()
+            return jsonify({
+                "error": f"{customer.customer_id} has already been collected for this date."
+            }), 409
+
+        payment = Payment(
+            customer_id=customer.customer_id,
+            payment_date=payment_date,
+            amount=amount,
+            user_id=current_user.id
+        )
+        db.session.add(payment)
+
+        customer.total_paid = (customer.total_paid or 0) + amount
+        customer.remaining_balance = customer.loan_amount - customer.total_paid
+
+        if customer.remaining_balance <= 0:
+            customer.remaining_balance = 0
+            customer.status = "Closed"
+        else:
+            customer.status = "Active"
+
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+        logging.exception("Error saving collection via Customer Amount Update")
+        return jsonify({
+            "error": "Something went wrong while saving. Please try again."
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "customer_id": customer.customer_id,
+        "name": customer.name,
+        "amount": amount,
+        "total_paid": customer.total_paid,
+        "remaining_balance": customer.remaining_balance,
+        "status": customer.status,
+        "message": f"₹{amount:,.0f} successfully added for {customer.customer_id}."
+    })
 
 
 # ==========================
