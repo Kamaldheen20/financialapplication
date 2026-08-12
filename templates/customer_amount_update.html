@@ -6,12 +6,24 @@
 <title>Customer Amount Update</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
+  html, body { height: 100%; }
   .card { border-radius: 12px; }
   #regNoInput { font-size: 1.15rem; }
   .row-uploaded { background-color: #f1f8f4; }
   .customer-row td { vertical-align: middle; }
+  .customer-row { cursor: pointer; }
   .mobile-card { border: 1px solid #dee2e6; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
   .mobile-card.row-uploaded { border-color: #198754; }
+  .main-wrap { height: calc(100vh - 90px); min-height: 560px; }
+  .left-pane { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+  .right-pane { height: 100%; display: flex; flex-direction: column; }
+  .list-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 200px; }
+  .big-total { font-size: 2.2rem; }
+  @media (max-width: 991.98px) {
+    .main-wrap { height: auto; }
+    .left-pane, .right-pane { height: auto; overflow: visible; }
+    .list-scroll { max-height: 55vh; }
+  }
   @media (max-width: 767.98px) {
     .desktop-table { display: none; }
   }
@@ -22,78 +34,104 @@
 </head>
 <body class="bg-light">
 
-<div class="container mt-4 mb-5">
+<div class="container-fluid mt-3 mb-3 px-3">
 
   <!-- Header -->
-  <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
-    <h2 class="mb-0">Customer Amount Update</h2>
-    <a href="/dashboard" class="btn btn-outline-dark">&larr; Dashboard</a>
-  </div>
-
-  <!-- Working Date + Live Counters -->
-  <div class="card shadow p-3 mb-4">
-    <div class="row g-3 align-items-end">
-      <div class="col-12 col-md-4">
-        <div class="text-muted small mb-1">Working Date</div>
-        <input type="date" id="workingDateInput" class="form-control form-control-lg">
-      </div>
-      <div class="col-6 col-md-4 text-center">
-        <div class="text-muted small">Today's Customers</div>
-        <div class="fs-5 fw-semibold" id="todaysCustomers">0</div>
-      </div>
-      <div class="col-6 col-md-4 text-center">
-        <div class="text-muted small">Today's Total Collection</div>
-        <div class="fs-5 fw-semibold" id="todaysTotal">&#8377;0</div>
-      </div>
-    </div>
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h2 class="mb-0 fs-4">Customer Amount Update</h2>
+    <a href="/dashboard" class="btn btn-outline-dark btn-sm">&larr; Dashboard</a>
   </div>
 
   <!-- Alert area for feedback -->
   <div id="alertArea"></div>
 
-  <!-- Reg No Entry -->
-  <div class="card shadow p-3 mb-4">
-    <h5 class="mb-3">Customer Reg No</h5>
-    <div class="d-flex gap-2">
-      <input type="text" id="regNoInput" class="form-control form-control-lg"
-             placeholder="Enter Reg No" autocomplete="off">
-      <button class="btn btn-success btn-lg" id="addBtn" type="button">Add</button>
+  <div class="row g-3 main-wrap">
+
+    <!-- LEFT PANE: date, entry, detail, total — everything visible, no scrolling -->
+    <div class="col-12 col-lg-5">
+      <div class="left-pane">
+
+        <div class="card shadow p-3 mb-3">
+          <div class="text-muted small mb-1">Working Date</div>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-secondary" id="prevDateBtn" title="Previous day">&larr;</button>
+            <input type="date" id="workingDateInput" class="form-control">
+            <button type="button" class="btn btn-outline-secondary" id="nextDateBtn" title="Next day">&rarr;</button>
+            <button type="button" class="btn btn-outline-primary" id="refreshBtn" title="Refresh (F11)">&#8635;</button>
+          </div>
+        </div>
+
+        <div class="card shadow p-3 mb-3">
+          <div class="text-muted small mb-1">உ.எண் (Reg No)</div>
+          <div class="d-flex gap-2">
+            <input type="text" id="regNoInput" class="form-control form-control-lg"
+                   placeholder="Enter Reg No" autocomplete="off">
+            <input type="number" step="0.01" min="0.01" id="quickAmountInput" class="form-control form-control-lg"
+                   placeholder="Amount" autocomplete="off" style="max-width: 150px;" disabled>
+            <button class="btn btn-success btn-lg" id="addBtn" type="button">Add</button>
+          </div>
+          <small class="text-muted d-block mt-2">Type/scan a reg no — added automatically on match, or press Enter / tap Add. Then type the amount and press Enter.</small>
+        </div>
+
+        <div class="card shadow p-3 mb-3" id="customerDetailCard">
+          <div class="row g-2">
+            <div class="col-12"><span class="text-muted">பெயர் (Name):</span> <span id="detailName" class="fw-semibold">-</span></div>
+            <div class="col-12"><span class="text-muted">தேதி (Date):</span> <span id="detailDate" class="fw-semibold">-</span></div>
+            <div class="col-12"><span class="text-muted">கடன் (Due):</span> <span id="detailLoan" class="fw-semibold">-</span></div>
+            <div class="col-12"><span class="text-muted">குறிப்பு (Remark):</span> <span id="detailRemark" class="fw-semibold">-</span></div>
+          </div>
+          <div class="text-muted small mt-2">Ctrl+Delete = Delete the focused row</div>
+        </div>
+
+        <div class="card shadow p-3 mb-3 text-center">
+          <div class="text-muted small">Record</div>
+          <div class="fs-5 fw-semibold mb-2" id="recordCounter">0/0</div>
+          <div class="text-muted small">Total Collection</div>
+          <div class="big-total fw-bold text-danger" id="todaysTotal">&#8377;0</div>
+        </div>
+
+      </div>
     </div>
-    <small class="text-muted d-block mt-2">Type or scan a registration number — it's added automatically as soon as it matches a customer, or press Enter / tap Add.</small>
+
+    <!-- RIGHT PANE: the list grid, its own internal scroll only -->
+    <div class="col-12 col-lg-7">
+      <div class="card shadow p-3 right-pane">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+          <h5 class="mb-0">Today's Collection Entries</h5>
+          <button type="button" class="btn btn-primary" id="uploadAllBtn">Upload</button>
+        </div>
+
+        <div class="list-scroll">
+          <div class="table-responsive desktop-table">
+            <table class="table align-middle table-sm">
+              <thead>
+                <tr>
+                  <th>உ.எண்</th>
+                  <th>Name</th>
+                  <th style="width: 60px;">O.D</th>
+                  <th>Due</th>
+                  <th style="width: 160px;">ரசீது தொகை</th>
+                  <th style="width: 140px;">Status</th>
+                  <th style="width: 80px;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="rowsTableBody">
+                <tr id="emptyRowDesktop">
+                  <td colspan="7" class="text-center text-muted py-4">No customers added yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Mobile card list -->
+          <div class="mobile-list" id="rowsMobileList">
+            <div class="text-center text-muted py-4" id="emptyRowMobile">No customers added yet.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
-
-  <!-- Customer List (desktop table) -->
-  <div class="card shadow p-3 mb-4">
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-      <h5 class="mb-0">Today's Collection Entries</h5>
-      <button type="button" class="btn btn-primary" id="uploadAllBtn">Upload</button>
-    </div>
-
-    <div class="table-responsive desktop-table">
-      <table class="table align-middle">
-        <thead>
-          <tr>
-            <th>Reg No</th>
-            <th>Name</th>
-            <th>Due</th>
-            <th style="width: 180px;">Amount</th>
-            <th style="width: 160px;">Status</th>
-          </tr>
-        </thead>
-        <tbody id="rowsTableBody">
-          <tr id="emptyRowDesktop">
-            <td colspan="5" class="text-center text-muted py-4">No customers added yet.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Mobile card list -->
-    <div class="mobile-list" id="rowsMobileList">
-      <div class="text-center text-muted py-4" id="emptyRowMobile">No customers added yet.</div>
-    </div>
-  </div>
-
 </div>
 
 <script>
@@ -108,10 +146,10 @@
   const CURRENT_USER_ID = "{{ current_user.id }}";
 
   const regNoInput = document.getElementById("regNoInput");
+  const quickAmountInput = document.getElementById("quickAmountInput");
   const addBtn = document.getElementById("addBtn");
   const uploadAllBtn = document.getElementById("uploadAllBtn");
   const workingDateInput = document.getElementById("workingDateInput");
-  const todaysCustomersEl = document.getElementById("todaysCustomers");
   const todaysTotalEl = document.getElementById("todaysTotal");
   const alertArea = document.getElementById("alertArea");
 
@@ -131,12 +169,44 @@
 
   workingDateInput.value = workingDate;
 
-  workingDateInput.addEventListener("change", function () {
-    if (!this.value) return;
-    workingDate = this.value;
+  function setWorkingDate(newDate) {
+    workingDate = newDate;
+    workingDateInput.value = workingDate;
     localStorage.setItem("workingDate", workingDate);
     clearAllRowsUI();
     restoreRows();
+  }
+
+  workingDateInput.addEventListener("change", function () {
+    if (!this.value) return;
+    setWorkingDate(this.value);
+  });
+
+  function shiftWorkingDate(deltaDays) {
+    const d = new Date(workingDate + "T00:00:00");
+    d.setDate(d.getDate() + deltaDays);
+    setWorkingDate(d.toISOString().split("T")[0]);
+  }
+
+  document.getElementById("prevDateBtn").addEventListener("click", function () {
+    shiftWorkingDate(-1);
+  });
+  document.getElementById("nextDateBtn").addEventListener("click", function () {
+    shiftWorkingDate(1);
+  });
+  document.getElementById("refreshBtn").addEventListener("click", function () {
+    clearAllRowsUI();
+    restoreRows();
+    showAlert("Refreshed.", "info");
+  });
+
+  // F11 = Refresh, matching the legacy screen's "Refresh (F11)" button.
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "F11") {
+      e.preventDefault();
+      clearAllRowsUI();
+      restoreRows();
+    }
   });
 
   // ==============================
@@ -147,8 +217,8 @@
   let todaysTotal = 0;
 
   function refreshCounters() {
-    todaysCustomersEl.textContent = todaysCustomers;
     todaysTotalEl.textContent = "\u20B9" + todaysTotal.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+    updateRecordCounter();
   }
 
   // ==============================
@@ -176,11 +246,46 @@
     const hasRows = Object.keys(rows).length > 0;
     emptyRowDesktop.style.display = hasRows ? "none" : "";
     emptyRowMobile.style.display = hasRows ? "none" : "";
+    updateRecordCounter();
   }
 
   function money(n) {
     const val = Number(n) || 0;
     return "\u20B9" + val.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
+  // O.D column — mirrors the legacy grid's overdue indicator: a red
+  // dotted marker for accounts overdue with no fixed day-count, or the
+  // number of overdue days when known. Blank when not overdue.
+  function odBadge(overdueDays) {
+    if (overdueDays === null || overdueDays === undefined || overdueDays === "") return "";
+    if (overdueDays === true || overdueDays === "\u2022\u2022\u2022") {
+      return '<span class="text-danger fw-bold">\u2022\u2022\u2022</span>';
+    }
+    const n = Number(overdueDays);
+    if (!isNaN(n) && n > 0) {
+      return '<span class="text-danger fw-bold">' + n + '</span>';
+    }
+    return "";
+  }
+
+  const recordCounterEl = document.getElementById("recordCounter");
+  const detailName = document.getElementById("detailName");
+  const detailDate = document.getElementById("detailDate");
+  const detailLoan = document.getElementById("detailLoan");
+  const detailRemark = document.getElementById("detailRemark");
+
+  function updateRecordCounter() {
+    const total = Object.keys(rows).length;
+    const uploaded = Object.keys(rows).filter(function (id) { return rows[id].uploaded; }).length;
+    recordCounterEl.textContent = uploaded + "/" + total;
+  }
+
+  function showCustomerDetail(customer) {
+    detailName.textContent = customer.name || "-";
+    detailDate.textContent = workingDate || "-";
+    detailLoan.textContent = customer.remaining_balance != null ? money(customer.remaining_balance) : "-";
+    detailRemark.textContent = customer.remark || "-";
   }
 
   // ==============================
@@ -203,6 +308,7 @@
         customer_id: id,
         name: state.name,
         remaining_balance: state.remaining_balance,
+        overdue_days: state.overdue_days != null ? state.overdue_days : null,
         amount: amountInput ? amountInput.value : (state.finalAmount != null ? state.finalAmount : ""),
         uploaded: state.uploaded,
         statusLabel: state.statusLabel || null
@@ -237,7 +343,8 @@
       addCustomerRow({
         customer_id: item.customer_id,
         name: item.name,
-        remaining_balance: item.remaining_balance
+        remaining_balance: item.remaining_balance,
+        overdue_days: item.overdue_days
       }, false, /* restoring */ true);
 
       const state = rows[item.customer_id];
@@ -275,17 +382,42 @@
 
     const dueDisplay = money(customer.remaining_balance);
 
+    const odDisplay = odBadge(customer.overdue_days);
+
+    tr.setAttribute("tabindex", "0");
     tr.innerHTML = `
       <td class="fw-semibold">${escapeHtml(customerId)}</td>
       <td>${escapeHtml(customer.name || "")}</td>
+      <td>${odDisplay}</td>
       <td>${dueDisplay}</td>
-      <td>
+      <td class="amount-cell">
         <input type="number" step="0.01" min="0.01" class="form-control amount-input" placeholder="Amount">
       </td>
       <td><span class="status-text text-muted">Pending</span></td>
+      <td><button type="button" class="btn btn-sm btn-outline-danger delete-row-btn">Delete</button></td>
     `;
 
     tableBody.appendChild(tr);
+
+    // Clicking/focusing a row shows its details in the top panel, and
+    // enables Ctrl+Delete to remove it — matching the legacy desktop
+    // Collection screen's "Ctrl+Del = Delete" behavior.
+    tr.addEventListener("focus", function () { showCustomerDetail(customer); });
+    tr.addEventListener("click", function (e) {
+      showCustomerDetail(customer);
+      // Don't steal focus back to the row if the click was on an
+      // interactive child (amount input, delete button) — otherwise
+      // typing into the amount box never gets focus.
+      const tag = e.target.tagName;
+      if (tag === "INPUT" || tag === "BUTTON") return;
+      tr.focus();
+    });
+    tr.addEventListener("keydown", function (e) {
+      if (e.ctrlKey && (e.key === "Delete" || e.key === "Del")) {
+        e.preventDefault();
+        deleteRow(customerId);
+      }
+    });
 
     // ---- Mobile card ----
     const card = document.createElement("div");
@@ -298,24 +430,29 @@
           <div class="text-muted small">${escapeHtml(customer.name || "")}</div>
         </div>
         <div class="text-end">
-          <div class="text-muted small">Due</div>
-          <div>${dueDisplay}</div>
+          <div class="text-muted small">O.D / Due</div>
+          <div>${odDisplay} ${dueDisplay}</div>
         </div>
       </div>
       <div class="d-flex gap-2 mt-2 align-items-center">
         <input type="number" step="0.01" min="0.01" class="form-control amount-input" placeholder="Amount">
         <span class="status-text text-muted text-nowrap">Pending</span>
       </div>
+      <div class="mt-2 text-end">
+        <button type="button" class="btn btn-sm btn-outline-danger delete-row-btn">Delete</button>
+      </div>
     `;
 
     mobileList.appendChild(card);
+    card.addEventListener("click", function () { showCustomerDetail(customer); });
 
     const rowState = {
       desktopRow: tr,
       mobileCard: card,
       uploaded: false,
       name: customer.name || "",
-      remaining_balance: customer.remaining_balance
+      remaining_balance: customer.remaining_balance,
+      overdue_days: customer.overdue_days != null ? customer.overdue_days : null
     };
     rows[customerId] = rowState;
 
@@ -338,11 +475,82 @@
       markRowUploaded(customerId, null, "Already collected");
     }
 
+    // Delete button — lets the user pull the row back out, whether it's
+    // still pending (typed wrong reg no / wrong amount before upload) or
+    // already uploaded (wrong amount was sent to the server and needs to
+    // be undone so it can be re-entered).
+    [tr, card].forEach(function (el) {
+      const delBtn = el.querySelector(".delete-row-btn");
+      delBtn.addEventListener("click", function () {
+        deleteRow(customerId);
+      });
+    });
+
     updateEmptyState();
 
     if (!restoring) {
       saveRowsToStorage();
     }
+  }
+
+  function removeRowFromUI(customerId) {
+    const state = rows[customerId];
+    if (!state) return;
+    state.desktopRow.remove();
+    state.mobileCard.remove();
+    delete rows[customerId];
+    if (quickAmountCustomerId === customerId) resetQuickAmount();
+    updateEmptyState();
+    saveRowsToStorage();
+  }
+
+  function deleteRow(customerId) {
+    const state = rows[customerId];
+    if (!state) return;
+
+    // Not uploaded yet — just remove it locally, nothing to undo server-side.
+    if (!state.uploaded) {
+      removeRowFromUI(customerId);
+      return;
+    }
+
+    // Already uploaded — must ask the server to delete the payment record
+    // too, otherwise the wrong amount stays booked in the ledger even
+    // though it disappears from this screen.
+    if (!confirm(`Delete the uploaded payment of ${state.finalAmount != null ? money(state.finalAmount) : ""} for ${customerId}? This removes it from the ledger so you can re-enter the correct amount.`)) {
+      return;
+    }
+
+    const delBtns = [state.desktopRow.querySelector(".delete-row-btn"), state.mobileCard.querySelector(".delete-row-btn")];
+    delBtns.forEach(function (b) { if (b) b.disabled = true; });
+
+    fetch("/api/customer-amount-update/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customer_id: customerId,
+        payment_date: workingDate
+      })
+    }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    }).then(function (result) {
+      if (!result.ok) {
+        showAlert(result.data.error || "Could not delete this entry. Please try again.", "danger");
+        delBtns.forEach(function (b) { if (b) b.disabled = false; });
+        return;
+      }
+
+      const removedAmount = parseFloat(state.finalAmount) || 0;
+      todaysCustomers = Math.max(0, todaysCustomers - 1);
+      todaysTotal = Math.max(0, todaysTotal - removedAmount);
+      refreshCounters();
+
+      removeRowFromUI(customerId);
+      showAlert(`Entry for ${customerId} deleted. You can re-enter it now.`, "success");
+    }).catch(function () {
+      showAlert("Could not reach the server. Please check your connection and try again.", "danger");
+      delBtns.forEach(function (b) { if (b) b.disabled = false; });
+    });
   }
 
   function markRowUploaded(customerId, amount, label) {
@@ -373,6 +581,7 @@
     });
 
     saveRowsToStorage();
+    updateRecordCounter();
   }
 
   function markRowFailed(customerId, label) {
@@ -419,6 +628,70 @@
     });
   }
 
+  // ==============================
+  // Quick-amount flow — after a reg no is added, the newly-added
+  // customer's id is tracked here so the small Amount box next to the
+  // reg no field can push its value straight into that row without the
+  // user having to click into the table at all.
+  // ==============================
+
+  let quickAmountCustomerId = null;
+
+  function focusQuickAmount(customerId) {
+    quickAmountCustomerId = customerId;
+    quickAmountInput.disabled = false;
+    quickAmountInput.value = "";
+    quickAmountInput.focus();
+  }
+
+  function resetQuickAmount() {
+    quickAmountCustomerId = null;
+    quickAmountInput.value = "";
+    quickAmountInput.disabled = true;
+  }
+
+  function applyQuickAmount() {
+    if (!quickAmountCustomerId) {
+      regNoInput.focus();
+      return;
+    }
+
+    const customerId = quickAmountCustomerId;
+    const state = rows[customerId];
+    const rawAmount = quickAmountInput.value.trim();
+
+    // Row may have been deleted, or box left empty — either way, just
+    // hand focus back to reg no so entry can continue.
+    if (!state || !rawAmount) {
+      resetQuickAmount();
+      regNoInput.focus();
+      return;
+    }
+
+    const amount = parseFloat(rawAmount);
+    if (isNaN(amount) || amount <= 0) {
+      showAlert("Enter a valid amount greater than 0.", "danger");
+      quickAmountInput.select();
+      return;
+    }
+
+    const desktopInput = state.desktopRow.querySelector(".amount-input");
+    const mobileInput = state.mobileCard.querySelector(".amount-input");
+    if (desktopInput) desktopInput.value = amount;
+    if (mobileInput) mobileInput.value = amount;
+    saveRowsToStorage();
+
+    resetQuickAmount();
+    regNoInput.focus();
+  }
+
+  quickAmountInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyQuickAmount();
+    }
+  });
+
   function handleAdd() {
     const raw = regNoInput.value.normalize("NFC").trim();
 
@@ -448,6 +721,9 @@
           return;
         }
         addCustomerRow(result.data, result.data.already_collected);
+        if (!result.data.already_collected) {
+          focusQuickAmount(result.data.customer_id);
+        }
       })
       .catch(function () {
         showAlert("Could not reach the server. Please check your connection and try again.", "danger");
@@ -455,7 +731,7 @@
       .finally(function () {
         addBtn.disabled = false;
         regNoInput.value = "";
-        regNoInput.focus();
+        if (!quickAmountCustomerId) regNoInput.focus();
       });
   }
 
@@ -493,6 +769,9 @@
         if (result.ok) {
           addCustomerRow(result.data, result.data.already_collected);
           regNoInput.value = "";
+          if (!result.data.already_collected) {
+            focusQuickAmount(result.data.customer_id);
+          }
         }
         // Silent on not-found — the user may still be mid-typing a
         // longer ID, or it may just not exist; they'll get an explicit
@@ -500,7 +779,7 @@
       }).catch(function () {
         // Silent — this is a background check, not a user action.
       }).finally(function () {
-        regNoInput.focus();
+        if (!quickAmountCustomerId) regNoInput.focus();
       });
     }, 350);
   });
