@@ -802,13 +802,49 @@ def api_customer_amount_update_lookup():
             user_id=current_user.id
         ).first() is not None
 
+    # ---- Overdue days (O.D column) ----
+    # expected_paid = how much should have been collected by "today" if
+    # every due day was paid, based on daily_due * days elapsed since
+    # start_date (inclusive, same convention as customer_details()).
+    # overdue_days = how many full daily_due installments behind the
+    # customer currently is, based on what's actually been paid.
+    overdue_days = 0
+    try:
+        daily_due = customer.daily_due or 0
+        if customer.start_date and daily_due > 0:
+            fmt = "%Y-%m-%d"
+            start = datetime.strptime(str(customer.start_date), fmt)
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            if customer.end_date:
+                end = datetime.strptime(str(customer.end_date), fmt)
+                total_days = (end - start).days + 1
+            else:
+                total_days = None
+
+            if today < start:
+                days_passed = 0
+            else:
+                days_passed = (today - start).days + 1
+                if total_days is not None:
+                    days_passed = min(days_passed, total_days)
+
+            expected_paid = daily_due * days_passed
+            overdue_amount = expected_paid - (customer.total_paid or 0)
+
+            if overdue_amount > 0:
+                overdue_days = int(overdue_amount // daily_due)
+    except (ValueError, TypeError):
+        overdue_days = 0
+
     return jsonify({
         "customer_id": customer.customer_id,
         "name": customer.name,
         "daily_due": customer.daily_due or 0,
         "remaining_balance": customer.remaining_balance or 0,
         "status": customer.status,
-        "already_collected": already_collected
+        "already_collected": already_collected,
+        "overdue_days": overdue_days
     })
 
 
@@ -908,6 +944,87 @@ def api_customer_amount_update_upload():
         "remaining_balance": customer.remaining_balance,
         "status": customer.status,
         "message": f"₹{amount:,.0f} successfully added for {customer.customer_id}."
+    })
+
+
+@app.route("/api/customer-amount-update/delete", methods=["POST"])
+@login_required
+def api_customer_amount_update_delete():
+    # Undo a payment created via the Customer Amount Update screen, e.g.
+    # after an accidental wrong-amount upload, so the customer can be
+    # re-added and the correct amount entered. Reverses the exact math
+    # /api/customer-amount-update/upload applied.
+    data = request.get_json(silent=True) or {}
+
+    customer_id = str(data.get("customer_id", "")).strip()
+    payment_date = str(data.get("payment_date", "")).strip()
+
+    if not customer_id:
+        return jsonify({"error": "Customer registration number is required."}), 400
+
+    if not payment_date:
+        return jsonify({"error": "Working Date is missing. Please reload the page."}), 400
+
+    try:
+        datetime.strptime(payment_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid Working Date."}), 400
+
+    try:
+        customer = Customer.query.filter_by(
+            customer_id=customer_id,
+            user_id=current_user.id
+        ).with_for_update().first()
+
+        if not customer:
+            db.session.rollback()
+            return jsonify({
+                "error": "Customer not found. Please check the registration number."
+            }), 404
+
+        payment = Payment.query.filter_by(
+            customer_id=customer_id,
+            payment_date=payment_date,
+            user_id=current_user.id
+        ).with_for_update().first()
+
+        if not payment:
+            db.session.rollback()
+            return jsonify({
+                "error": "No payment found for this customer on this date."
+            }), 404
+
+        amount = payment.amount or 0
+        db.session.delete(payment)
+
+        customer.total_paid = (customer.total_paid or 0) - amount
+        if customer.total_paid < 0:
+            customer.total_paid = 0
+        customer.remaining_balance = customer.loan_amount - customer.total_paid
+
+        if customer.remaining_balance <= 0:
+            customer.remaining_balance = 0
+            customer.status = "Closed"
+        else:
+            customer.status = "Active"
+
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+        logging.exception("Error deleting collection via Customer Amount Update")
+        return jsonify({
+            "error": "Something went wrong while deleting. Please try again."
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "customer_id": customer.customer_id,
+        "amount": amount,
+        "total_paid": customer.total_paid,
+        "remaining_balance": customer.remaining_balance,
+        "status": customer.status,
+        "message": f"Deleted ₹{amount:,.0f} for {customer.customer_id}."
     })
 
 
