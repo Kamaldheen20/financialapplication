@@ -164,7 +164,17 @@
   // stays in sync everywhere. No independent date system is created.
   // ==============================
 
-  const today = new Date().toISOString().split("T")[0];
+  // NOTE: toISOString() converts to UTC first, which skews the date by
+  // one day for timezones ahead of UTC (e.g. IST, UTC+5:30). Always build
+  // the YYYY-MM-DD string from local getFullYear/getMonth/getDate instead.
+  function toLocalISODate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + day;
+  }
+
+  const today = toLocalISODate(new Date());
   let workingDate = localStorage.getItem("workingDate") || today;
 
   workingDateInput.value = workingDate;
@@ -185,7 +195,7 @@
   function shiftWorkingDate(deltaDays) {
     const d = new Date(workingDate + "T00:00:00");
     d.setDate(d.getDate() + deltaDays);
-    setWorkingDate(d.toISOString().split("T")[0]);
+    setWorkingDate(toLocalISODate(d));
   }
 
   document.getElementById("prevDateBtn").addEventListener("click", function () {

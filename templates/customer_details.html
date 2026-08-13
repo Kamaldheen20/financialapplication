@@ -76,6 +76,7 @@ body { background: #f8f9fa; }
           <p><b>Customer ID:</b> {{ customer.customer_id }}</p>
           <p><b>Name:</b> {{ customer.name }}</p>
           <p><b>Mobile:</b> {{ customer.mobile }}</p>
+          <p><b>Address:</b> {{ customer.address if customer.address else "—" }}</p>
         </div>
 
         <div class="col-md-6">
