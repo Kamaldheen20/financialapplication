@@ -816,18 +816,13 @@ def api_customer_amount_update_lookup():
             start = datetime.strptime(str(customer.start_date), fmt)
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-            if customer.end_date:
-                end = datetime.strptime(str(customer.end_date), fmt)
-                total_days = (end - start).days + 1
-            else:
-                total_days = None
-
             if today < start:
                 days_passed = 0
             else:
+                # Total days passed since start_date, uncapped by end_date,
+                # so OD reflects the real number of days overdue (e.g. 365+),
+                # not just up to the 3-month loan tenure.
                 days_passed = (today - start).days + 1
-                if total_days is not None:
-                    days_passed = min(days_passed, total_days)
 
             expected_paid = daily_due * days_passed
             overdue_amount = expected_paid - (customer.total_paid or 0)
