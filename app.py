@@ -1040,11 +1040,58 @@ def collection_sheet():
 
     customers = _sort_customers(customers)
 
+    # FIX (500 error): this bucketing used to happen inside the Jinja
+    # template with payment.payment_date.split('-')[2]|int, run inside
+    # THREE nested loops (customer x day x payment) for every page
+    # load. Any payment_date that wasn't a clean "YYYY-MM-DD" string -
+    # blank, None, or a "YYYY-MM-DD HH:MM:SS" string left over from an
+    # Excel restore - raised an uncaught IndexError/ValueError deep
+    # inside template rendering, which Flask turns into a 500 for the
+    # whole page with no useful message. Doing it here in Python lets
+    # us skip bad rows instead of crashing, and log them so they're
+    # easy to find and fix in the data.
+    daily_totals = {}                    # {customer_id: {day: amount}}
+    day_totals = {d: 0 for d in range(1, 32)}
+    month_totals = {}                    # {customer_id: total}
+    month_collection = 0
+
+    for payment in payments:
+        pd = (payment.payment_date or "").strip()
+        if not pd.startswith(selected_month):
+            continue
+        try:
+            day = int(pd.split("-")[2][:2])
+        except (IndexError, ValueError):
+            logger.warning(
+                f"collection_sheet: skipping payment id={payment.id} "
+                f"with unparseable payment_date={pd!r}"
+            )
+            continue
+        if not (1 <= day <= 31):
+            continue
+
+        cust_days = daily_totals.setdefault(payment.customer_id, {})
+        cust_days[day] = cust_days.get(day, 0) + payment.amount
+
+        day_totals[day] += payment.amount
+        month_totals[payment.customer_id] = (
+            month_totals.get(payment.customer_id, 0) + payment.amount
+        )
+        month_collection += payment.amount
+
+    total_paid_all = sum(c.total_paid or 0 for c in customers)
+    total_balance_all = sum(c.remaining_balance or 0 for c in customers)
+
     return render_template(
         "collection_sheet.html",
         customers=customers,
-        payments=payments,
-        selected_month=selected_month
+        selected_month=selected_month,
+        daily_totals=daily_totals,
+        day_totals=day_totals,
+        month_totals=month_totals,
+        month_collection=month_collection,
+        total_paid_all=total_paid_all,
+        total_balance_all=total_balance_all,
     )
 
 
